@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type {
   ApiSpec,
   BodyField,
@@ -9,7 +9,8 @@ import type {
   RequestBodySpec,
 } from "@/lib/data/apiSpec";
 import { spec as defaultSpec } from "@/lib/data/apiSpec";
-import { ChevronDown, Link2 } from "lucide-react";
+import { ChevronDown, Link2, Play } from "lucide-react";
+import { ApiRunner } from "./ApiRunner";
 import { CodeBlock } from "./CodeBlock";
 import { CodeTabs } from "./CodeTabs";
 import { MethodBadge } from "./MethodBadge";
@@ -111,19 +112,27 @@ export function EndpointDetail({
   spec = defaultSpec,
   baseUrl,
   projectName,
+  runnerStorageScope = "default",
 }: {
   endpoint: Endpoint;
   spec?: ApiSpec;
   baseUrl?: string;
   projectName?: string;
+  runnerStorageScope?: string;
 }) {
   const responses = endpoint.responses;
   const [activeStatus, setActiveStatus] = useState(responses[0].status);
+  const [runnerOpen, setRunnerOpen] = useState(false);
   const bodies = endpointBodies(endpoint);
-  const [activeContentType, setActiveContentType] = useState(
+  const [selectedContentType, setActiveContentType] = useState(
     bodies[0]?.contentType ?? ""
   );
   const active = responses.find((r) => r.status === activeStatus) ?? responses[0];
+  const activeContentType = bodies.some(
+    (body) => body.contentType === selectedContentType
+  )
+    ? selectedContentType
+    : bodies[0]?.contentType ?? "";
   const activeBody =
     bodies.find((body) => body.contentType === activeContentType) ?? bodies[0];
   const activeBaseUrl = baseUrl ?? spec.info.baseUrl;
@@ -132,18 +141,8 @@ export function EndpointDetail({
   const query = endpoint.params?.filter((p) => p.in === "query") ?? [];
   const headers = endpoint.headers ?? [];
 
-  useEffect(() => {
-    if (!bodies.length) {
-      setActiveContentType("");
-      return;
-    }
-    if (!bodies.some((body) => body.contentType === activeContentType)) {
-      setActiveContentType(bodies[0].contentType);
-    }
-  }, [bodies, activeContentType]);
-
-  return (
-    <div className="max-w-4xl mx-auto px-8 py-10 space-y-10">
+  const docs = (
+    <div className="space-y-10 min-w-0">
       <header className="space-y-4">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Link2 className="size-3.5" />
@@ -151,10 +150,23 @@ export function EndpointDetail({
         </div>
         <h1 className="tracking-tight">{endpoint.summary}</h1>
         <p className="text-muted-foreground leading-relaxed">{endpoint.description}</p>
-        <div className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30 font-mono text-sm">
-          <MethodBadge method={endpoint.method} />
-          <span className="text-muted-foreground">{activeBaseUrl}</span>
-          <span>{endpoint.path}</span>
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/30 p-3 sm:flex-row sm:items-center">
+          <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto font-mono text-sm">
+            <MethodBadge method={endpoint.method} />
+            <span className="text-muted-foreground">{activeBaseUrl}</span>
+            <span>{endpoint.path}</span>
+          </div>
+          <button
+            onClick={() => setRunnerOpen((open) => !open)}
+            className={`h-9 rounded-md px-3 text-sm flex items-center justify-center gap-2 transition-colors ${
+              runnerOpen
+                ? "bg-primary text-primary-foreground"
+                : "border border-border bg-background hover:bg-accent"
+            }`}
+          >
+            <Play className="size-4" />
+            Run
+          </button>
         </div>
       </header>
 
@@ -244,6 +256,35 @@ export function EndpointDetail({
       <Section title="Code examples">
         <CodeTabs endpoint={endpoint} baseUrl={activeBaseUrl} body={activeBody} />
       </Section>
+    </div>
+  );
+
+  return (
+    <div
+      className={
+        runnerOpen
+          ? "mx-auto w-full max-w-[1500px] px-6 py-8"
+          : "max-w-4xl mx-auto px-8 py-10"
+      }
+    >
+      {runnerOpen ? (
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_600px] xl:items-start">
+          {docs}
+          <ApiRunner
+            endpoint={endpoint}
+            baseUrl={activeBaseUrl}
+            params={[...path, ...query]}
+            headers={headers}
+            bodies={bodies}
+            activeBody={activeBody}
+            onBodyChange={setActiveContentType}
+            storageScope={runnerStorageScope}
+            onClose={() => setRunnerOpen(false)}
+          />
+        </div>
+      ) : (
+        docs
+      )}
     </div>
   );
 }
