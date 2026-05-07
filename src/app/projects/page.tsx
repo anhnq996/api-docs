@@ -102,6 +102,7 @@ function ProjectDocsContent() {
             spec={activeProject.spec}
             baseUrl={activeBaseUrl}
             projectName={activeProject.name}
+            runnerStorageScope={activeProject.id}
           />
         ) : (
           <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
