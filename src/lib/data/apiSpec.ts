@@ -71,29 +71,29 @@ export const spec: ApiSpec = {
     title: "Nebula Commerce API",
     version: "2.4.1",
     description:
-      "RESTful API chuẩn OpenAPI 3.1 cho nền tảng thương mại điện tử Nebula. Hỗ trợ quản lý người dùng, sản phẩm, đơn hàng và thanh toán.",
+      "OpenAPI 3.1 RESTful API for the Nebula commerce platform. Supports user, product, order, and payment workflows.",
     baseUrl: "https://api.nebula.dev/v2",
     servers: [{ url: "https://api.nebula.dev/v2", description: "Production" }],
   },
   tags: [
     {
       name: "Authentication",
-      description: "Đăng ký, đăng nhập và quản lý token JWT.",
+      description: "Register, sign in, and manage JWT tokens.",
       endpoints: [
         {
           id: "auth-login",
           method: "POST",
           path: "/auth/login",
-          summary: "Đăng nhập người dùng",
+          summary: "Sign in user",
           description:
-            "Xác thực email/password, trả về access token và refresh token.",
+            "Authenticates email and password, then returns an access token and refresh token.",
           headers: [
             {
               name: "Content-Type",
               in: "header",
               type: "string",
               required: true,
-              description: "Kiểu dữ liệu gửi lên",
+              description: "Submitted content type",
               example: "application/json",
             },
             {
@@ -101,7 +101,7 @@ export const spec: ApiSpec = {
               in: "header",
               type: "string",
               required: false,
-              description: "Mã định danh client",
+              description: "Client identifier",
               example: "web-app-v2",
             },
           ],
@@ -112,20 +112,20 @@ export const spec: ApiSpec = {
                 name: "email",
                 type: "string",
                 required: true,
-                description: "Địa chỉ email người dùng",
+                description: "User email address",
                 example: "alice@example.com",
               },
               {
                 name: "password",
                 type: "string",
                 required: true,
-                description: "Mật khẩu (tối thiểu 8 ký tự)",
-                example: "••••••••",
+                description: "Password (minimum 8 characters)",
+                example: "********",
               },
               {
                 name: "remember",
                 type: "boolean",
-                description: "Ghi nhớ phiên đăng nhập 30 ngày",
+                description: "Remember the sign-in session for 30 days",
                 example: true,
               },
             ],
@@ -138,7 +138,7 @@ export const spec: ApiSpec = {
           responses: [
             {
               status: 200,
-              description: "Đăng nhập thành công",
+              description: "Signed in successfully",
               example: {
                 access_token: "eyJhbGciOiJIUzI1...",
                 refresh_token: "rt_9f8a...",
@@ -148,20 +148,20 @@ export const spec: ApiSpec = {
             },
             {
               status: 400,
-              description: "Dữ liệu gửi lên không hợp lệ",
+              description: "Invalid request payload",
               example: { error: "invalid_request", message: "Email is required" },
             },
             {
               status: 401,
-              description: "Sai thông tin đăng nhập",
+              description: "Invalid credentials",
               example: {
                 error: "invalid_credentials",
-                message: "Email hoặc mật khẩu không đúng",
+                message: "The email or password is incorrect",
               },
             },
             {
               status: 429,
-              description: "Vượt quá số lần thử cho phép",
+              description: "Too many attempts",
               example: {
                 error: "too_many_requests",
                 retry_after: 60,
@@ -173,8 +173,8 @@ export const spec: ApiSpec = {
           id: "auth-refresh",
           method: "POST",
           path: "/auth/refresh",
-          summary: "Làm mới access token",
-          description: "Cấp lại access token mới từ refresh token hợp lệ.",
+          summary: "Refresh access token",
+          description: "Issues a new access token from a valid refresh token.",
           body: {
             contentType: "application/json",
             fields: [
@@ -182,7 +182,7 @@ export const spec: ApiSpec = {
                 name: "refresh_token",
                 type: "string",
                 required: true,
-                description: "Refresh token đang có hiệu lực",
+                description: "Active refresh token",
                 example: "rt_9f8a...",
               },
             ],
@@ -191,7 +191,7 @@ export const spec: ApiSpec = {
           responses: [
             {
               status: 200,
-              description: "Làm mới thành công",
+              description: "Refreshed successfully",
               example: {
                 access_token: "eyJhbGciOi...",
                 expires_in: 3600,
@@ -199,7 +199,7 @@ export const spec: ApiSpec = {
             },
             {
               status: 401,
-              description: "Refresh token hết hạn hoặc không hợp lệ",
+              description: "Refresh token is expired or invalid",
               example: { error: "invalid_token" },
             },
           ],
@@ -208,8 +208,8 @@ export const spec: ApiSpec = {
           id: "auth-logout",
           method: "DELETE",
           path: "/auth/session",
-          summary: "Đăng xuất",
-          description: "Thu hồi token của phiên hiện tại.",
+          summary: "Sign out",
+          description: "Revokes the token for the current session.",
           headers: [
             {
               name: "Authorization",
@@ -221,10 +221,10 @@ export const spec: ApiSpec = {
             },
           ],
           responses: [
-            { status: 204, description: "Đăng xuất thành công", example: null },
+            { status: 204, description: "Signed out successfully", example: null },
             {
               status: 401,
-              description: "Chưa xác thực",
+              description: "Unauthenticated",
               example: { error: "unauthorized" },
             },
           ],
@@ -233,21 +233,21 @@ export const spec: ApiSpec = {
     },
     {
       name: "Users",
-      description: "Quản lý tài khoản người dùng và hồ sơ.",
+      description: "Manage user accounts and profiles.",
       endpoints: [
         {
           id: "users-list",
           method: "GET",
           path: "/users",
-          summary: "Danh sách người dùng",
-          description: "Lấy danh sách người dùng với phân trang và lọc.",
+          summary: "List users",
+          description: "Returns a paginated and filterable list of users.",
           headers: [
             {
               name: "Authorization",
               in: "header",
               type: "string",
               required: true,
-              description: "Bearer token với scope admin",
+              description: "Bearer token with admin scope",
               example: "Bearer eyJhbGc...",
             },
           ],
@@ -256,35 +256,35 @@ export const spec: ApiSpec = {
               name: "page",
               in: "query",
               type: "integer",
-              description: "Số trang (bắt đầu từ 1)",
+              description: "Page number (starts at 1)",
               example: "1",
             },
             {
               name: "limit",
               in: "query",
               type: "integer",
-              description: "Số bản ghi/trang (1-100)",
+              description: "Records per page (1-100)",
               example: "20",
             },
             {
               name: "q",
               in: "query",
               type: "string",
-              description: "Từ khoá tìm kiếm theo email/tên",
+              description: "Search keyword by email or name",
               example: "alice",
             },
             {
               name: "role",
               in: "query",
               type: "string",
-              description: "Lọc theo vai trò (admin|user|guest)",
+              description: "Filter by role (admin|user|guest)",
               example: "user",
             },
           ],
           responses: [
             {
               status: 200,
-              description: "Thành công",
+              description: "Success",
               example: {
                 data: [
                   {
@@ -300,12 +300,12 @@ export const spec: ApiSpec = {
             },
             {
               status: 401,
-              description: "Chưa xác thực",
+              description: "Unauthenticated",
               example: { error: "unauthorized" },
             },
             {
               status: 403,
-              description: "Không đủ quyền",
+              description: "Forbidden",
               example: { error: "forbidden" },
             },
           ],
@@ -314,22 +314,22 @@ export const spec: ApiSpec = {
           id: "users-get",
           method: "GET",
           path: "/users/{userId}",
-          summary: "Chi tiết người dùng",
-          description: "Lấy thông tin chi tiết của một người dùng theo ID.",
+          summary: "Get user details",
+          description: "Returns detailed information for a user by ID.",
           params: [
             {
               name: "userId",
               in: "path",
               type: "string",
               required: true,
-              description: "ID người dùng",
+              description: "User ID",
               example: "u_123",
             },
           ],
           responses: [
             {
               status: 200,
-              description: "Thành công",
+              description: "Success",
               example: {
                 id: "u_123",
                 email: "alice@example.com",
@@ -341,8 +341,8 @@ export const spec: ApiSpec = {
             },
             {
               status: 404,
-              description: "Không tìm thấy người dùng",
-              example: { error: "not_found", message: "User u_123 không tồn tại" },
+              description: "User not found",
+              example: { error: "not_found", message: "User u_123 does not exist" },
             },
           ],
         },
@@ -350,55 +350,55 @@ export const spec: ApiSpec = {
           id: "users-update",
           method: "PATCH",
           path: "/users/{userId}",
-          summary: "Cập nhật người dùng",
-          description: "Cập nhật một phần thông tin hồ sơ người dùng.",
+          summary: "Update user",
+          description: "Partially updates a user profile.",
           params: [
             {
               name: "userId",
               in: "path",
               type: "string",
               required: true,
-              description: "ID người dùng",
+              description: "User ID",
               example: "u_123",
             },
           ],
           body: {
             contentType: "application/json",
             fields: [
-              { name: "name", type: "string", description: "Tên hiển thị", example: "Alice N." },
-              { name: "phone", type: "string", description: "Số điện thoại", example: "+84901234567" },
-              { name: "avatar_url", type: "string", description: "URL ảnh đại diện", example: "https://cdn.nebula.dev/u/123.png" },
+              { name: "name", type: "string", description: "Display name", example: "Alice N." },
+              { name: "phone", type: "string", description: "Phone number", example: "+84901234567" },
+              { name: "avatar_url", type: "string", description: "Avatar image URL", example: "https://cdn.nebula.dev/u/123.png" },
             ],
             example: { name: "Alice N.", phone: "+84901234567" },
           },
           responses: [
-            { status: 200, description: "Cập nhật thành công", example: { id: "u_123", name: "Alice N." } },
-            { status: 400, description: "Payload không hợp lệ", example: { error: "validation_error" } },
-            { status: 404, description: "Không tìm thấy", example: { error: "not_found" } },
+            { status: 200, description: "Updated successfully", example: { id: "u_123", name: "Alice N." } },
+            { status: 400, description: "Invalid payload", example: { error: "validation_error" } },
+            { status: 404, description: "Not found", example: { error: "not_found" } },
           ],
         },
       ],
     },
     {
       name: "Products",
-      description: "Danh mục và sản phẩm.",
+      description: "Categories and products.",
       endpoints: [
         {
           id: "products-list",
           method: "GET",
           path: "/products",
-          summary: "Danh sách sản phẩm",
-          description: "Hỗ trợ tìm kiếm, lọc theo danh mục, sắp xếp và phân trang.",
+          summary: "List products",
+          description: "Supports search, category filtering, sorting, and pagination.",
           params: [
-            { name: "category", in: "query", type: "string", description: "Slug danh mục", example: "laptops" },
-            { name: "min_price", in: "query", type: "number", description: "Giá tối thiểu", example: "100" },
-            { name: "max_price", in: "query", type: "number", description: "Giá tối đa", example: "5000" },
+            { name: "category", in: "query", type: "string", description: "Category slug", example: "laptops" },
+            { name: "min_price", in: "query", type: "number", description: "Minimum price", example: "100" },
+            { name: "max_price", in: "query", type: "number", description: "Maximum price", example: "5000" },
             { name: "sort", in: "query", type: "string", description: "price_asc | price_desc | newest", example: "newest" },
           ],
           responses: [
             {
               status: 200,
-              description: "Thành công",
+              description: "Success",
               example: {
                 data: [
                   { id: "p_001", name: "Aurora 14", price: 1299, stock: 42, category: "laptops" },
@@ -413,20 +413,20 @@ export const spec: ApiSpec = {
           id: "products-create",
           method: "POST",
           path: "/products",
-          summary: "Tạo sản phẩm",
-          description: "Tạo mới sản phẩm. Yêu cầu scope product:write.",
+          summary: "Create product",
+          description: "Creates a new product. Requires the product:write scope.",
           headers: [
             { name: "Authorization", in: "header", type: "string", required: true, description: "Bearer token", example: "Bearer ..." },
-            { name: "Idempotency-Key", in: "header", type: "string", description: "Khoá tránh trùng lặp", example: "c3f1-..." },
+            { name: "Idempotency-Key", in: "header", type: "string", description: "Key used to prevent duplicate requests", example: "c3f1-..." },
           ],
           body: {
             contentType: "application/json",
             fields: [
-              { name: "name", type: "string", required: true, description: "Tên sản phẩm", example: "Aurora 14" },
-              { name: "price", type: "number", required: true, description: "Giá (USD)", example: 1299 },
-              { name: "stock", type: "integer", required: true, description: "Số lượng tồn", example: 50 },
-              { name: "category", type: "string", required: true, description: "Slug danh mục", example: "laptops" },
-              { name: "tags", type: "string[]", description: "Nhãn", example: ["new", "bestseller"] },
+              { name: "name", type: "string", required: true, description: "Product name", example: "Aurora 14" },
+              { name: "price", type: "number", required: true, description: "Price (USD)", example: 1299 },
+              { name: "stock", type: "integer", required: true, description: "Available stock", example: 50 },
+              { name: "category", type: "string", required: true, description: "Category slug", example: "laptops" },
+              { name: "tags", type: "string[]", description: "Tags", example: ["new", "bestseller"] },
             ],
             example: {
               name: "Aurora 14",
@@ -437,43 +437,43 @@ export const spec: ApiSpec = {
             },
           },
           responses: [
-            { status: 201, description: "Tạo thành công", example: { id: "p_010", name: "Aurora 14" } },
-            { status: 400, description: "Lỗi validate", example: { error: "validation_error", fields: { price: "must be > 0" } } },
-            { status: 409, description: "Trùng slug sản phẩm", example: { error: "conflict" } },
+            { status: 201, description: "Created successfully", example: { id: "p_010", name: "Aurora 14" } },
+            { status: 400, description: "Validation error", example: { error: "validation_error", fields: { price: "must be > 0" } } },
+            { status: 409, description: "Product slug conflict", example: { error: "conflict" } },
           ],
         },
         {
           id: "products-delete",
           method: "DELETE",
           path: "/products/{productId}",
-          summary: "Xoá sản phẩm",
-          description: "Xoá mềm một sản phẩm theo ID.",
+          summary: "Delete product",
+          description: "Soft-deletes a product by ID.",
           params: [
-            { name: "productId", in: "path", type: "string", required: true, description: "ID sản phẩm", example: "p_010" },
+            { name: "productId", in: "path", type: "string", required: true, description: "Product ID", example: "p_010" },
           ],
           responses: [
-            { status: 204, description: "Đã xoá", example: null },
-            { status: 404, description: "Không tồn tại", example: { error: "not_found" } },
+            { status: 204, description: "Deleted", example: null },
+            { status: 404, description: "Does not exist", example: { error: "not_found" } },
           ],
         },
       ],
     },
     {
       name: "Orders",
-      description: "Tạo và quản lý đơn hàng.",
+      description: "Create and manage orders.",
       endpoints: [
         {
           id: "orders-create",
           method: "POST",
           path: "/orders",
-          summary: "Tạo đơn hàng",
-          description: "Tạo đơn hàng từ giỏ hàng hiện tại.",
+          summary: "Create order",
+          description: "Creates an order from the current cart.",
           body: {
             contentType: "application/json",
             fields: [
-              { name: "items", type: "OrderItem[]", required: true, description: "Danh sách mục hàng", example: [{ product_id: "p_001", qty: 1 }] },
-              { name: "shipping_address_id", type: "string", required: true, description: "ID địa chỉ giao hàng", example: "addr_77" },
-              { name: "coupon", type: "string", description: "Mã khuyến mại", example: "SPRING10" },
+              { name: "items", type: "OrderItem[]", required: true, description: "Order line items", example: [{ product_id: "p_001", qty: 1 }] },
+              { name: "shipping_address_id", type: "string", required: true, description: "Shipping address ID", example: "addr_77" },
+              { name: "coupon", type: "string", description: "Coupon code", example: "SPRING10" },
             ],
             example: {
               items: [{ product_id: "p_001", qty: 1 }],
@@ -482,24 +482,24 @@ export const spec: ApiSpec = {
             },
           },
           responses: [
-            { status: 201, description: "Đã tạo", example: { id: "o_555", total: 1169.1, status: "pending" } },
-            { status: 402, description: "Thanh toán thất bại", example: { error: "payment_required" } },
-            { status: 422, description: "Không thể xử lý", example: { error: "out_of_stock", product_id: "p_001" } },
+            { status: 201, description: "Created", example: { id: "o_555", total: 1169.1, status: "pending" } },
+            { status: 402, description: "Payment failed", example: { error: "payment_required" } },
+            { status: 422, description: "Could not process", example: { error: "out_of_stock", product_id: "p_001" } },
           ],
         },
         {
           id: "orders-get",
           method: "GET",
           path: "/orders/{orderId}",
-          summary: "Chi tiết đơn hàng",
-          description: "Lấy chi tiết đơn hàng bao gồm mục hàng, vận chuyển và thanh toán.",
+          summary: "Get order details",
+          description: "Returns order details including line items, shipping, and payment data.",
           params: [
-            { name: "orderId", in: "path", type: "string", required: true, description: "ID đơn hàng", example: "o_555" },
+            { name: "orderId", in: "path", type: "string", required: true, description: "Order ID", example: "o_555" },
           ],
           responses: [
             {
               status: 200,
-              description: "Thành công",
+              description: "Success",
               example: {
                 id: "o_555",
                 status: "paid",
@@ -508,27 +508,27 @@ export const spec: ApiSpec = {
                 shipping: { carrier: "DHL", tracking: "JD012345" },
               },
             },
-            { status: 404, description: "Không tìm thấy", example: { error: "not_found" } },
+            { status: 404, description: "Not found", example: { error: "not_found" } },
           ],
         },
       ],
     },
     {
       name: "Webhooks",
-      description: "Đăng ký và nhận sự kiện hệ thống.",
+      description: "Register for and receive system events.",
       endpoints: [
         {
           id: "webhooks-create",
           method: "POST",
           path: "/webhooks",
-          summary: "Đăng ký webhook",
-          description: "Đăng ký URL nhận sự kiện (order.paid, product.updated,...).",
+          summary: "Register webhook",
+          description: "Registers a URL to receive events such as order.paid and product.updated.",
           body: {
             contentType: "application/json",
             fields: [
-              { name: "url", type: "string", required: true, description: "URL đích nhận POST", example: "https://hooks.acme.com/nebula" },
-              { name: "events", type: "string[]", required: true, description: "Danh sách sự kiện quan tâm", example: ["order.paid", "order.refunded"] },
-              { name: "secret", type: "string", description: "Secret để ký HMAC", example: "whsec_..." },
+              { name: "url", type: "string", required: true, description: "Destination URL that receives POST requests", example: "https://hooks.acme.com/nebula" },
+              { name: "events", type: "string[]", required: true, description: "List of subscribed events", example: ["order.paid", "order.refunded"] },
+              { name: "secret", type: "string", description: "Secret used to sign HMAC payloads", example: "whsec_..." },
             ],
             example: {
               url: "https://hooks.acme.com/nebula",
@@ -537,8 +537,8 @@ export const spec: ApiSpec = {
             },
           },
           responses: [
-            { status: 201, description: "Đăng ký thành công", example: { id: "wh_22", status: "active" } },
-            { status: 400, description: "URL không hợp lệ", example: { error: "invalid_url" } },
+            { status: 201, description: "Registered successfully", example: { id: "wh_22", status: "active" } },
+            { status: 400, description: "Invalid URL", example: { error: "invalid_url" } },
           ],
         },
       ],

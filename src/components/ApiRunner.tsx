@@ -10,18 +10,23 @@ import {
   type UIEvent,
 } from "react";
 import {
+  AlertCircle,
   Braces,
+  Check,
+  Copy,
+  ChevronDown,
   FileText,
   Wand2,
   FormInput,
   ListPlus,
   Loader2,
-  Play,
   Plus,
   RotateCcw,
   Save,
-  SlidersHorizontal,
+  Send,
+  Terminal,
   Trash2,
+  Variable,
   X,
 } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -34,10 +39,11 @@ import { CodeBlock } from "./CodeBlock";
 import { MethodBadge } from "./MethodBadge";
 import { StatusBadge } from "./StatusBadge";
 
-type RequestTab = "params" | "headers" | "body";
-type ResponseTab = "body" | "headers";
+type RequestTab = "params" | "headers" | "body" | "auth" | "scripts";
+type ResponseTab = "pretty" | "raw" | "preview" | "headers";
 type BodyMode = "none" | "json" | "form-data" | "form-urlencoded" | "raw";
 type CaptureSource = "body" | "header";
+type AuthType = "none" | "bearer" | "basic" | "api-key" | "oauth2";
 
 type KeyValueRow = {
   id: string;
@@ -61,6 +67,9 @@ type RunnerValues = {
   formUrlRows: KeyValueRow[];
   requestTab: RequestTab;
   responseTab: ResponseTab;
+  auth: AuthConfig;
+  preScript: string;
+  postScript: string;
   responseCaptures: ResponseCapture[];
 };
 
@@ -68,8 +77,10 @@ type RunnerResponse = {
   status: number;
   statusText: string;
   durationMs: number;
+  size: number;
   headers: [string, string][];
   body: string;
+  rawBody: string;
   contentType: string;
 };
 
@@ -88,12 +99,56 @@ type EnvironmentVariable = {
   updatedAt: string;
 };
 
+type AuthConfig = {
+  type: AuthType;
+  bearerToken: string;
+  basicUsername: string;
+  basicPassword: string;
+  apiKeyName: string;
+  apiKeyValue: string;
+  apiKeyIn: "header" | "query";
+  oauth2AccessToken: string;
+  oauth2TokenUrl: string;
+  oauth2ClientId: string;
+  oauth2ClientSecret: string;
+  oauth2Scope: string;
+};
+
+type ConsoleEntry = {
+  id: string;
+  time: number;
+  level: "log" | "info" | "warn" | "error";
+  source: "pre" | "post" | "system";
+  parts: string[];
+};
+
 type FieldOption = {
   source: CaptureSource;
   path: string;
   label: string;
   preview: string;
 };
+
+const DEFAULT_AUTH: AuthConfig = {
+  type: "none",
+  bearerToken: "",
+  basicUsername: "",
+  basicPassword: "",
+  apiKeyName: "X-API-Key",
+  apiKeyValue: "",
+  apiKeyIn: "header",
+  oauth2AccessToken: "",
+  oauth2TokenUrl: "",
+  oauth2ClientId: "",
+  oauth2ClientSecret: "",
+  oauth2Scope: "",
+};
+
+const DEFAULT_PRE_SCRIPT =
+  "// Runs before Send.\n// pm.environment.set('traceId', Date.now().toString());\n// pm.request.headers.set('X-Trace-Id', pm.environment.get('traceId'));\n";
+
+const DEFAULT_POST_SCRIPT =
+  "// Runs after the response.\n// const data = pm.response.json();\n// pm.environment.set('token', data.access_token);\n// console.log('status', pm.response.status);\n";
 
 const EMPTY_VALUES: RunnerValues = {
   params: {},
@@ -108,7 +163,10 @@ const EMPTY_VALUES: RunnerValues = {
   formDataRows: [],
   formUrlRows: [],
   requestTab: "params",
-  responseTab: "body",
+  responseTab: "pretty",
+  auth: DEFAULT_AUTH,
+  preScript: DEFAULT_PRE_SCRIPT,
+  postScript: DEFAULT_POST_SCRIPT,
   responseCaptures: [],
 };
 
@@ -228,6 +286,27 @@ function formatResponseBody(body: string, contentType: string) {
   }
 }
 
+function responseLanguage(contentType: string) {
+  const normalized = contentType.toLowerCase();
+  if (normalized.includes("json")) return "json";
+  if (normalized.includes("html")) return "html";
+  if (normalized.includes("xml")) return "xml";
+  if (normalized.includes("yaml") || normalized.includes("yml")) return "yaml";
+  if (normalized.includes("css")) return "css";
+  if (normalized.includes("javascript")) return "javascript";
+  return "text";
+}
+
+function formatSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function quoteShellValue(value: string) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function storageKey(scope: string, endpoint: Endpoint) {
   return `api-docs.runner.v2:${scope}:${endpoint.method}:${endpoint.path}:${endpoint.id}`;
 }
@@ -309,7 +388,7 @@ function buildUrl(
         environment
       );
       if (param.required && !value.trim()) {
-        throw new Error(`Thiếu path param: ${param.name}`);
+        throw new Error(`Missing path parameter: ${param.name}`);
       }
       path = path.replaceAll(`{${param.name}}`, encodeURIComponent(value));
     });
@@ -342,6 +421,23 @@ function getJsonBodyText(body: RequestBodySpec | undefined, values: RunnerValues
 function normalizeValues(raw: unknown): RunnerValues {
   if (!raw || typeof raw !== "object") return EMPTY_VALUES;
   const value = raw as Partial<RunnerValues>;
+  const requestTab =
+    value.requestTab === "headers" ||
+    value.requestTab === "body" ||
+    value.requestTab === "auth" ||
+    value.requestTab === "scripts"
+      ? value.requestTab
+      : "params";
+  const responseTab =
+    value.responseTab === "raw" ||
+    value.responseTab === "preview" ||
+    value.responseTab === "headers"
+      ? value.responseTab
+      : "pretty";
+  const auth = {
+    ...DEFAULT_AUTH,
+    ...(value.auth && typeof value.auth === "object" ? value.auth : {}),
+  };
   return {
     ...EMPTY_VALUES,
     ...value,
@@ -354,6 +450,11 @@ function normalizeValues(raw: unknown): RunnerValues {
     bodies: value.bodies ?? {},
     formDataRows: value.formDataRows ?? [],
     formUrlRows: value.formUrlRows ?? [],
+    requestTab,
+    responseTab,
+    auth,
+    preScript: typeof value.preScript === "string" ? value.preScript : DEFAULT_PRE_SCRIPT,
+    postScript: typeof value.postScript === "string" ? value.postScript : DEFAULT_POST_SCRIPT,
     responseCaptures: value.responseCaptures ?? [],
   };
 }
@@ -393,6 +494,52 @@ function resolveEnvReferences(value: string, variables: EnvironmentVariable[]) {
   return value.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (match, name: string) =>
     envMap.has(name) ? envMap.get(name) ?? "" : match
   );
+}
+
+function consolePart(value: unknown) {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function environmentValue(variables: EnvironmentVariable[], name: string) {
+  return variables.find((item) => item.name === name)?.value;
+}
+
+function upsertEnvironmentValue(
+  variables: EnvironmentVariable[],
+  name: string,
+  value: unknown
+) {
+  const normalizedName = normalizeVariableName(name);
+  if (!normalizedName) return variables;
+  const stringValue = stringifyEnvValue(value);
+  const updatedAt = new Date().toISOString();
+  const index = variables.findIndex((item) => item.name === normalizedName);
+  if (index < 0) {
+    return [
+      ...variables,
+      {
+        id: makeRow().id,
+        name: normalizedName,
+        value: stringValue,
+        updatedAt,
+      },
+    ].sort((a, b) => a.name.localeCompare(b.name));
+  }
+  return variables
+    .map((item, itemIndex) =>
+      itemIndex === index ? { ...item, value: stringValue, updatedAt } : item
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function removeEnvironmentValue(variables: EnvironmentVariable[], name: string) {
+  const normalizedName = normalizeVariableName(name);
+  return variables.filter((item) => item.name !== normalizedName);
 }
 
 function valueFromCapture(response: RunnerResponse, capture: ResponseCapture) {
@@ -533,18 +680,19 @@ function MiniTabs<T extends string>({
   onChange,
 }: {
   value: T;
-  items: { value: T; label: string }[];
+  items: { value: T; label: ReactNode }[];
   onChange: (value: T) => void;
 }) {
   return (
-    <div className="grid grid-cols-3 rounded-lg bg-muted/50 p-1">
+    <div className="inline-flex h-9 max-w-full items-center justify-start overflow-x-auto rounded-xl bg-muted p-[3px] text-muted-foreground">
       {items.map((item) => (
         <button
+          type="button"
           key={item.value}
           onClick={() => onChange(item.value)}
-          className={`rounded-md px-2 py-2 text-xs transition-colors ${
+          className={`inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-transparent px-3 py-1 text-sm font-medium transition-[color,box-shadow] focus-visible:outline-1 focus-visible:outline-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 ${
             value === item.value
-              ? "bg-background text-foreground shadow"
+              ? "bg-card text-foreground shadow-sm dark:border-input dark:bg-input/30"
               : "text-muted-foreground hover:text-foreground"
           }`}
         >
@@ -555,14 +703,122 @@ function MiniTabs<T extends string>({
   );
 }
 
+function EnvironmentPopover({
+  variables,
+  onChange,
+  onClose,
+}: {
+  variables: EnvironmentVariable[];
+  onChange: (variables: EnvironmentVariable[]) => void;
+  onClose: () => void;
+}) {
+  const updateVariable = (id: string, patch: Partial<EnvironmentVariable>) => {
+    const updatedAt = new Date().toISOString();
+    onChange(
+      variables.map((variable) =>
+        variable.id === id ? { ...variable, ...patch, updatedAt } : variable
+      )
+    );
+  };
+
+  const addVariable = () => {
+    let index = 1;
+    let name = "var";
+    while (variables.some((variable) => variable.name === name)) {
+      index += 1;
+      name = `var${index}`;
+    }
+    onChange([
+      ...variables,
+      {
+        id: makeRow().id,
+        name,
+        value: "",
+        updatedAt: new Date().toISOString(),
+      },
+    ]);
+  };
+
+  return (
+    <div className="absolute right-0 top-full z-50 mt-1 w-[380px] rounded-lg border border-border bg-popover text-popover-foreground shadow-2xl">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <div className="text-sm" style={{ fontWeight: 600 }}>
+          Environment variables
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex size-7 items-center justify-center rounded hover:bg-accent"
+          aria-label="Close environment variables"
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
+      <div className="max-h-72 overflow-y-auto p-2">
+        {variables.length ? (
+          <div className="space-y-1">
+            {variables.map((variable) => (
+              <div key={variable.id} className="flex items-center gap-1">
+                <input
+                  value={variable.name}
+                  onChange={(event) =>
+                    updateVariable(variable.id, { name: event.target.value })
+                  }
+                  className="w-1/3 rounded border border-border bg-input-background px-2 py-1 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <input
+                  value={variable.value}
+                  onChange={(event) =>
+                    updateVariable(variable.id, { value: event.target.value })
+                  }
+                  className="min-w-0 flex-1 rounded border border-border bg-input-background px-2 py-1 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChange(variables.filter((item) => item.id !== variable.id))
+                  }
+                  className="flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  aria-label="Remove variable"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+            No variables yet. Add one here or save a response field.
+          </div>
+        )}
+      </div>
+      <div className="flex items-center justify-between border-t border-border px-3 py-2">
+        <button
+          type="button"
+          onClick={addVariable}
+          className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+        >
+          <Plus className="size-3" />
+          Add
+        </button>
+        <span className="font-mono text-[11px] text-muted-foreground">
+          {"{{name}}"} in URL/header/body
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function KeyValueEditor({
   rows,
   emptyText,
   onChange,
+  showEmptyState = true,
 }: {
   rows: KeyValueRow[];
   emptyText: string;
   onChange: (rows: KeyValueRow[]) => void;
+  showEmptyState?: boolean;
 }) {
   const updateRow = (id: string, patch: Partial<KeyValueRow>) => {
     onChange(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
@@ -601,11 +857,11 @@ function KeyValueEditor({
             </button>
           </div>
         ))
-      ) : (
+      ) : showEmptyState ? (
         <div className="rounded-lg border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
           {emptyText}
         </div>
-      )}
+      ) : null}
       <button
         onClick={() => onChange([...rows, makeRow()])}
         className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground hover:bg-accent hover:text-foreground flex items-center gap-2"
@@ -614,6 +870,80 @@ function KeyValueEditor({
         Add row
       </button>
     </div>
+  );
+}
+
+function ResponsePreview({ response }: { response: RunnerResponse }) {
+  const body = response.rawBody || response.body;
+  const contentType = response.contentType.toLowerCase();
+  const parsedJson = contentType.includes("json") ? parseJsonBody(body) : undefined;
+
+  if (!body.trim()) {
+    return (
+      <div className="rounded-lg border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
+        No response body.
+      </div>
+    );
+  }
+
+  if (contentType.includes("html")) {
+    return (
+      <iframe
+        title="Response preview"
+        srcDoc={body}
+        sandbox=""
+        className="h-[520px] w-full rounded-lg border border-border bg-white"
+      />
+    );
+  }
+
+  if (parsedJson && typeof parsedJson === "object") {
+    const entries = Array.isArray(parsedJson)
+      ? parsedJson.slice(0, 50).map((item, index) => [`[${index}]`, item] as const)
+      : Object.entries(parsedJson as Record<string, unknown>).slice(0, 80);
+    return (
+      <div className="max-h-[520px] overflow-auto rounded-lg border border-border">
+        {entries.map(([key, value]) => (
+          <div
+            key={key}
+            className="grid grid-cols-[160px_1fr] gap-3 border-b border-border px-3 py-2 text-xs last:border-b-0"
+          >
+            <div className="min-w-0 break-all font-mono text-muted-foreground">
+              {key}
+            </div>
+            <div className="min-w-0 break-all font-mono">
+              {previewValue(value)}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/20 p-3 font-mono text-xs leading-relaxed">
+      {body}
+    </pre>
+  );
+}
+
+function ScriptEditor({
+  value,
+  onChange,
+  rows = 8,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  rows?: number;
+}) {
+  return (
+    <textarea
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      spellCheck={false}
+      rows={rows}
+      className="w-full resize-y rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-ring"
+    />
   );
 }
 
@@ -639,7 +969,7 @@ function JsonEditor({
       onChange(formatJsonText(value));
       setFormatError(null);
     } catch (e: unknown) {
-      setFormatError(e instanceof Error ? e.message : "JSON không hợp lệ.");
+      setFormatError(e instanceof Error ? e.message : "Invalid JSON.");
     }
   };
 
@@ -729,11 +1059,11 @@ function JsonEditor({
       </div>
       {formatError && (
         <div className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          JSON không hợp lệ: {formatError}
+          Invalid JSON: {formatError}
         </div>
       )}
       <div className="text-[11px] text-muted-foreground">
-        Nhấn <span className="font-mono">Alt + Shift + F</span> để format JSON.
+        Press <span className="font-mono">Alt + Shift + F</span> to format JSON.
       </div>
     </div>
   );
@@ -742,6 +1072,7 @@ function JsonEditor({
 export function ApiRunner({
   endpoint,
   baseUrl,
+  baseUrlOptions = [],
   params,
   headers,
   bodies,
@@ -752,6 +1083,7 @@ export function ApiRunner({
 }: {
   endpoint: Endpoint;
   baseUrl: string;
+  baseUrlOptions?: string[];
   params: Param[];
   headers: Param[];
   bodies: RequestBodySpec[];
@@ -768,8 +1100,28 @@ export function ApiRunner({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<RunnerResponse | null>(null);
+  const [baseUrlInput, setBaseUrlInput] = useState(baseUrl);
+  const [envOpen, setEnvOpen] = useState(false);
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [consoleLog, setConsoleLog] = useState<ConsoleEntry[]>([]);
+  const [oauthLoading, setOauthLoading] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
   const loadedKeyRef = useRef<string | null>(null);
   const envLoadedRef = useRef(false);
+  const selectableBaseUrls = useMemo(
+    () => Array.from(new Set([baseUrl, ...baseUrlOptions].filter(Boolean))),
+    [baseUrl, baseUrlOptions]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setBaseUrlInput(baseUrl);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [baseUrl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -862,6 +1214,28 @@ export function ApiRunner({
   const setBodyMode = (mode: BodyMode) =>
     setValues((current) => ({ ...current, bodyMode: mode, requestTab: "body" }));
 
+  const setAuth = (auth: Partial<AuthConfig>) =>
+    setValues((current) => ({ ...current, auth: { ...current.auth, ...auth } }));
+
+  const pushConsole = (
+    level: ConsoleEntry["level"],
+    source: ConsoleEntry["source"],
+    parts: unknown[]
+  ) => {
+    setConsoleLog((current) =>
+      [
+        ...current,
+        {
+          id: makeRow().id,
+          time: Date.now(),
+          level,
+          source,
+          parts: parts.map(consolePart),
+        },
+      ].slice(-200)
+    );
+  };
+
   const setParam = (param: Param, value: string) =>
     setValues((current) => ({
       ...current,
@@ -919,38 +1293,39 @@ export function ApiRunner({
     }
   };
 
-  const saveEnvironmentVariables = (updates: { name: string; value: string }[]) => {
-    if (!updates.length) return;
-    setEnvironment((current) => {
-      const next = [...current];
-      updates.forEach((update) => {
-        const name = normalizeVariableName(update.name);
-        if (!name) return;
-        const existingIndex = next.findIndex((item) => item.name === name);
-        const item = {
-          id: existingIndex >= 0 ? next[existingIndex].id : makeRow().id,
-          name,
-          value: update.value,
-          updatedAt: new Date().toISOString(),
-        };
-        if (existingIndex >= 0) {
-          next[existingIndex] = item;
-        } else {
-          next.push(item);
-        }
-      });
-      const sorted = next.sort((a, b) => a.name.localeCompare(b.name));
-      try {
-        localStorage.setItem(envKey, JSON.stringify(sorted));
-      } catch {
-        // ignore
+  const mergeEnvironmentUpdates = (
+    current: EnvironmentVariable[],
+    updates: { name: string; value: string }[]
+  ) => {
+    if (!updates.length) return current;
+    const next = [...current];
+    const updatedAt = new Date().toISOString();
+    updates.forEach((update) => {
+      const name = normalizeVariableName(update.name);
+      if (!name) return;
+      const existingIndex = next.findIndex((item) => item.name === name);
+      const item = {
+        id: existingIndex >= 0 ? next[existingIndex].id : makeRow().id,
+        name,
+        value: update.value,
+        updatedAt,
+      };
+      if (existingIndex >= 0) {
+        next[existingIndex] = item;
+      } else {
+        next.push(item);
       }
-      return sorted;
     });
+    return next.sort((a, b) => a.name.localeCompare(b.name));
   };
 
-  const captureResponseVariables = (nextResponse: RunnerResponse) => {
-    const updates = values.responseCaptures
+  const saveEnvironmentVariables = (updates: { name: string; value: string }[]) => {
+    if (!updates.length) return;
+    setEnvironment((current) => mergeEnvironmentUpdates(current, updates));
+  };
+
+  const responseCaptureUpdates = (nextResponse: RunnerResponse) =>
+    values.responseCaptures
       .filter((capture) => capture.enabled && capture.path && capture.variableName.trim())
       .map((capture) => {
         const value = valueFromCapture(nextResponse, capture);
@@ -961,8 +1336,6 @@ export function ApiRunner({
         };
       })
       .filter((item): item is { name: string; value: string } => item !== null);
-    saveEnvironmentVariables(updates);
-  };
 
   const saveCaptureNow = (capture: ResponseCapture) => {
     if (!response || !capture.variableName.trim()) return;
@@ -1016,6 +1389,7 @@ export function ApiRunner({
     setLoading(true);
     setError(null);
     setResponse(null);
+    setConsoleLog([]);
     try {
       const activeEnvironment = envLoadedRef.current
         ? environment
@@ -1024,53 +1398,190 @@ export function ApiRunner({
         setEnvironment(activeEnvironment);
         envLoadedRef.current = true;
       }
-      const url = buildUrl(baseUrl, endpoint, params, values, activeEnvironment);
+      let workingEnvironment = activeEnvironment;
+      let workingUrl = buildUrl(baseUrlInput, endpoint, params, values, workingEnvironment);
       const requestHeaders: Record<string, string> = {};
       headers.forEach((header) => {
         const value = resolveEnvReferences(
           values.headers[header.name] ?? defaultHeaderValue(header, activeBody, bodyMode),
-          activeEnvironment
+          workingEnvironment
         );
         if (value.trim()) requestHeaders[header.name] = value;
       });
       values.customHeaders
         .filter((row) => row.enabled && row.key.trim())
         .forEach((row) => {
-          requestHeaders[row.key] = resolveEnvReferences(row.value, activeEnvironment);
+          requestHeaders[row.key] = resolveEnvReferences(row.value, workingEnvironment);
         });
 
-      const requestBody = buildBody(activeEnvironment);
+      const auth = values.auth;
+      if (auth.type === "bearer" && auth.bearerToken.trim()) {
+        requestHeaders.Authorization = `Bearer ${resolveEnvReferences(
+          auth.bearerToken,
+          workingEnvironment
+        )}`;
+      } else if (auth.type === "basic") {
+        requestHeaders.Authorization = `Basic ${btoa(
+          `${resolveEnvReferences(auth.basicUsername, workingEnvironment)}:${resolveEnvReferences(
+            auth.basicPassword,
+            workingEnvironment
+          )}`
+        )}`;
+      } else if (auth.type === "api-key" && auth.apiKeyName.trim()) {
+        const key = resolveEnvReferences(auth.apiKeyName, workingEnvironment);
+        const value = resolveEnvReferences(auth.apiKeyValue, workingEnvironment);
+        if (auth.apiKeyIn === "header") {
+          requestHeaders[key] = value;
+        } else {
+          const url = new URL(workingUrl);
+          url.searchParams.set(key, value);
+          workingUrl = url.toString();
+        }
+      } else if (auth.type === "oauth2" && auth.oauth2AccessToken.trim()) {
+        requestHeaders.Authorization = `Bearer ${resolveEnvReferences(
+          auth.oauth2AccessToken,
+          workingEnvironment
+        )}`;
+      }
+
+      let requestBody = buildBody(workingEnvironment);
       if (
         requestBody.contentType &&
         !Object.keys(requestHeaders).some((name) => name.toLowerCase() === "content-type")
       ) {
         requestHeaders["Content-Type"] = requestBody.contentType;
       }
+      let workingBody = typeof requestBody.body === "string" ? requestBody.body : "";
+      let bodyOverriddenByScript = false;
 
+      const makeEnvironmentApi = () => ({
+        get: (name: string) => environmentValue(workingEnvironment, name),
+        set: (name: string, value: unknown) => {
+          workingEnvironment = upsertEnvironmentValue(workingEnvironment, name, value);
+        },
+        unset: (name: string) => {
+          workingEnvironment = removeEnvironmentValue(workingEnvironment, name);
+        },
+        all: () =>
+          Object.fromEntries(workingEnvironment.map((item) => [item.name, item.value])),
+      });
+
+      const pmPre = {
+        environment: makeEnvironmentApi(),
+        request: {
+          method: endpoint.method,
+          get url() {
+            return workingUrl;
+          },
+          set url(value: string) {
+            workingUrl = value;
+          },
+          headers: {
+            set: (name: string, value: string) => {
+              requestHeaders[name] = value;
+            },
+            get: (name: string) =>
+              Object.entries(requestHeaders).find(
+                ([key]) => key.toLowerCase() === name.toLowerCase()
+              )?.[1],
+            remove: (name: string) => {
+              const key = Object.keys(requestHeaders).find(
+                (item) => item.toLowerCase() === name.toLowerCase()
+              );
+              if (key) delete requestHeaders[key];
+            },
+            all: () => ({ ...requestHeaders }),
+          },
+          get body() {
+            return workingBody;
+          },
+          set body(value: string) {
+            workingBody = String(value);
+            bodyOverriddenByScript = true;
+          },
+        },
+      };
+      pushConsole("info", "system", [`Send ${endpoint.method} ${endpoint.path}`]);
+      const preResult = runScript(
+        values.preScript,
+        "pre",
+        pmPre as unknown as Record<string, unknown>,
+        workingEnvironment
+      );
+      if (!preResult.ok) {
+        setLoading(false);
+        return;
+      }
+
+      if (bodyOverriddenByScript) {
+        requestBody = { body: workingBody, contentType: requestBody.contentType };
+      } else {
+        requestBody = buildBody(workingEnvironment);
+      }
+
+      // eslint-disable-next-line react-hooks/purity
       const started = performance.now();
       const canSendBody = !["GET", "HEAD"].includes(endpoint.method);
-      const res = await fetch(url, {
+      const resolvedUrl = resolveEnvReferences(workingUrl, workingEnvironment);
+      const resolvedHeaders = Object.fromEntries(
+        Object.entries(requestHeaders).map(([name, value]) => [
+          resolveEnvReferences(name, workingEnvironment),
+          resolveEnvReferences(value, workingEnvironment),
+        ])
+      );
+      const res = await fetch(resolvedUrl, {
         method: endpoint.method,
-        headers: requestHeaders,
+        headers: resolvedHeaders,
         body: canSendBody ? requestBody.body : undefined,
       });
       const text = await res.text();
-      const nextResponse = {
+      const nextResponse: RunnerResponse = {
         status: res.status,
         statusText: res.statusText,
+        // eslint-disable-next-line react-hooks/purity
         durationMs: Math.round(performance.now() - started),
+        size: new Blob([text]).size,
         headers: Array.from(res.headers.entries()),
         body: formatResponseBody(text, res.headers.get("content-type") ?? ""),
+        rawBody: text,
         contentType: res.headers.get("content-type") ?? "",
       };
       setResponse(nextResponse);
-      captureResponseVariables(nextResponse);
-      setValues((current) => ({ ...current, responseTab: "body" }));
+      const captureUpdates = responseCaptureUpdates(nextResponse);
+      workingEnvironment = mergeEnvironmentUpdates(workingEnvironment, captureUpdates);
+      setValues((current) => ({ ...current, responseTab: "pretty" }));
+      pushConsole("info", "system", [
+        `Response ${res.status} ${res.statusText} - ${nextResponse.durationMs} ms - ${formatSize(
+          nextResponse.size
+        )}`,
+      ]);
+
+      const pmPost = {
+        environment: makeEnvironmentApi(),
+        response: {
+          status: nextResponse.status,
+          statusText: nextResponse.statusText,
+          ok: res.ok,
+          headers: Object.fromEntries(nextResponse.headers),
+          text: nextResponse.rawBody,
+          json: () => parseJsonBody(nextResponse.rawBody) ?? null,
+        },
+      };
+      runScript(
+        values.postScript,
+        "post",
+        pmPost as unknown as Record<string, unknown>,
+        workingEnvironment
+      );
+      updateEnvironmentVariables(workingEnvironment);
     } catch (e: unknown) {
+      pushConsole("error", "system", [
+        e instanceof Error ? e.message : "Could not send the request.",
+      ]);
       setError(
         e instanceof Error
           ? e.message
-          : "Không gửi được request. Nếu API khác domain, hãy kiểm tra CORS."
+          : "Could not send the request. If the API is on another domain, check CORS."
       );
     } finally {
       setLoading(false);
@@ -1092,11 +1603,11 @@ export function ApiRunner({
   const responseOptions = response ? responseFieldOptions(response) : [];
   const requestUrlPreview = useMemo(() => {
     try {
-      return buildUrl(baseUrl, endpoint, params, values, environment);
+      return buildUrl(baseUrlInput, endpoint, params, values, environment);
     } catch (e: unknown) {
       return e instanceof Error ? e.message : "";
     }
-  }, [baseUrl, endpoint, environment, params, values]);
+  }, [baseUrlInput, endpoint, environment, params, values]);
 
   const updateCapture = (id: string, patch: Partial<ResponseCapture>) => {
     setValues((current) => ({
@@ -1118,62 +1629,303 @@ export function ApiRunner({
     }));
   };
 
+  const updateEnvironmentVariables = (next: EnvironmentVariable[]) => {
+    const normalized = next
+      .map((item) => ({
+        ...item,
+        name: normalizeVariableName(item.name),
+        updatedAt: item.updatedAt || new Date().toISOString(),
+      }))
+      .filter((item) => item.name);
+    const sorted = normalized.sort((a, b) => a.name.localeCompare(b.name));
+    setEnvironment(sorted);
+    try {
+      localStorage.setItem(envKey, JSON.stringify(sorted));
+    } catch {
+      // ignore
+    }
+  };
+
+  const copyText = async (text: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(key);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      // ignore
+    }
+  };
+
+  const runScript = (
+    code: string,
+    source: "pre" | "post",
+    pm: Record<string, unknown>,
+    currentEnvironment: EnvironmentVariable[]
+  ) => {
+    const trimmed = code.trim();
+    if (!trimmed || /^(\/\/.*\n?)+$/.test(trimmed)) {
+      return { environment: currentEnvironment, ok: true };
+    }
+
+    const sandboxConsole = {
+      log: (...parts: unknown[]) => pushConsole("log", source, parts),
+      info: (...parts: unknown[]) => pushConsole("info", source, parts),
+      warn: (...parts: unknown[]) => pushConsole("warn", source, parts),
+      error: (...parts: unknown[]) => pushConsole("error", source, parts),
+    };
+
+    try {
+      const fn = new Function("pm", "console", code);
+      fn(pm, sandboxConsole);
+      return { environment: currentEnvironment, ok: true };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      pushConsole("error", source, [message]);
+      return { environment: currentEnvironment, ok: false };
+    }
+  };
+
+  const fetchOAuthToken = async () => {
+    const auth = values.auth;
+    if (!auth.oauth2TokenUrl.trim()) {
+      pushConsole("error", "system", ["OAuth2 token URL is required."]);
+      return;
+    }
+    setOauthLoading(true);
+    try {
+      const body = new URLSearchParams();
+      body.set("grant_type", "client_credentials");
+      if (auth.oauth2ClientId) body.set("client_id", resolveEnvReferences(auth.oauth2ClientId, environment));
+      if (auth.oauth2ClientSecret) {
+        body.set("client_secret", resolveEnvReferences(auth.oauth2ClientSecret, environment));
+      }
+      if (auth.oauth2Scope) body.set("scope", resolveEnvReferences(auth.oauth2Scope, environment));
+      const response = await fetch(resolveEnvReferences(auth.oauth2TokenUrl, environment), {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      });
+      const text = await response.text();
+      const json = parseJsonBody(text) as Record<string, unknown> | undefined;
+      const token = typeof json?.access_token === "string" ? json.access_token : "";
+      if (!response.ok || !token) {
+        throw new Error(
+          token
+            ? `${response.status} ${response.statusText}`
+            : "Token response does not include access_token."
+        );
+      }
+      setAuth({ oauth2AccessToken: token });
+      pushConsole("info", "system", ["OAuth2 token saved."]);
+    } catch (error: unknown) {
+      pushConsole("error", "system", [
+        error instanceof Error ? error.message : "Could not fetch OAuth2 token.",
+      ]);
+    } finally {
+      setOauthLoading(false);
+    }
+  };
+
+  const requestPathPreview = useMemo(() => {
+    try {
+      const url = new URL(
+        buildUrl("https://api-docs.local", endpoint, params, values, environment)
+      );
+      return `${url.pathname}${url.search}`;
+    } catch {
+      return endpoint.path;
+    }
+  }, [endpoint, environment, params, values]);
+
+  const curlText = useMemo(() => {
+    const lines = [`curl -X ${endpoint.method} ${quoteShellValue(requestUrlPreview || baseUrlInput)}`];
+    const headerNames = new Set<string>();
+    const pushHeader = (name: string, value: string) => {
+      if (!name.trim() || !value.trim()) return;
+      headerNames.add(name.toLowerCase());
+      lines.push(`  -H ${quoteShellValue(`${name}: ${value}`)}`);
+    };
+
+    visibleHeaders.forEach(({ param, value }) =>
+      pushHeader(param.name, resolveEnvReferences(value, environment))
+    );
+    values.customHeaders
+      .filter((row) => row.enabled && row.key.trim())
+      .forEach((row) => pushHeader(row.key, resolveEnvReferences(row.value, environment)));
+
+    const canSendBody = !["GET", "HEAD"].includes(endpoint.method);
+    if (canSendBody && bodyMode !== "none") {
+      if (bodyMode === "json") {
+        const contentType = contentTypeForMode("json", activeBody, values);
+        if (contentType && !headerNames.has("content-type")) pushHeader("Content-Type", contentType);
+        lines.push(
+          `  --data-raw ${quoteShellValue(resolveEnvReferences(getJsonBodyText(activeBody, values), environment))}`
+        );
+      } else if (bodyMode === "raw") {
+        const contentType = contentTypeForMode("raw", activeBody, values);
+        if (contentType && !headerNames.has("content-type")) pushHeader("Content-Type", contentType);
+        lines.push(
+          `  --data-raw ${quoteShellValue(
+            resolveEnvReferences(values.rawBody || stringifyExample(activeBody?.example), environment)
+          )}`
+        );
+      } else if (bodyMode === "form-urlencoded") {
+        if (!headerNames.has("content-type")) {
+          pushHeader("Content-Type", "application/x-www-form-urlencoded");
+        }
+        formUrlRows
+          .filter((row) => row.enabled && row.key.trim())
+          .forEach((row) =>
+            lines.push(
+              `  --data-urlencode ${quoteShellValue(
+                `${row.key}=${resolveEnvReferences(row.value, environment)}`
+              )}`
+            )
+          );
+      } else if (bodyMode === "form-data") {
+        formDataRows
+          .filter((row) => row.enabled && row.key.trim())
+          .forEach((row) =>
+            lines.push(
+              `  -F ${quoteShellValue(`${row.key}=${resolveEnvReferences(row.value, environment)}`)}`
+            )
+          );
+      }
+    }
+
+    return lines.join(" \\\n");
+  }, [
+    activeBody,
+    baseUrlInput,
+    bodyMode,
+    endpoint.method,
+    environment,
+    formDataRows,
+    formUrlRows,
+    requestUrlPreview,
+    values,
+    visibleHeaders,
+  ]);
+
   return (
-    <aside className="rounded-xl border border-border bg-card text-card-foreground shadow-xl xl:sticky xl:top-6">
-      <div className="flex items-start justify-between gap-3 border-b border-border p-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <MethodBadge method={endpoint.method} />
-            <div className="truncate font-mono text-sm">{endpoint.path}</div>
+    <aside
+      className="fixed right-0 top-0 z-40 flex h-screen w-full max-w-[680px] flex-col border-l border-border bg-sidebar text-sidebar-foreground shadow-2xl"
+      style={{ boxShadow: "-8px 0 32px rgba(0,0,0,0.25)" }}
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-sidebar-border px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm" style={{ fontWeight: 600 }}>
+            API Runner
           </div>
-          <div className="mt-1 text-xs text-muted-foreground">Run API</div>
+          <div className="mt-0.5 truncate text-xs text-muted-foreground">
+            {endpoint.summary}
+          </div>
         </div>
-        <button
-          onClick={onClose}
-          className="size-8 rounded-md hover:bg-accent flex items-center justify-center text-muted-foreground hover:text-foreground"
-          aria-label="Close runner"
-        >
-          <X className="size-4" />
-        </button>
+        <div className="relative flex shrink-0 flex-nowrap items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setConsoleOpen((open) => !open)}
+            className={`flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2 text-xs ${
+              consoleOpen
+                ? "border-sky-500 bg-sky-500/10 text-sky-600 dark:text-sky-400"
+                : "border-border hover:bg-accent"
+            }`}
+            title="Console"
+          >
+            <Terminal className="size-3.5 shrink-0" />
+            Console{consoleLog.length ? ` (${consoleLog.length})` : ""}
+          </button>
+          <button
+            type="button"
+            onClick={() => setEnvOpen((open) => !open)}
+            className={`flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2 text-xs ${
+              envOpen
+                ? "border-amber-500 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                : "border-border hover:bg-accent"
+            }`}
+            title="Environment variables"
+          >
+            <Variable className="size-3.5 shrink-0" />
+            Env{environment.length ? ` (${environment.length})` : ""}
+          </button>
+          {envOpen && (
+            <EnvironmentPopover
+              variables={environment}
+              onChange={updateEnvironmentVariables}
+              onClose={() => setEnvOpen(false)}
+            />
+          )}
+          <button
+            type="button"
+            onClick={() => copyText(curlText, "curl")}
+            className="flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border px-2 text-xs hover:bg-accent"
+            title="Copy as cURL"
+          >
+            {copied === "curl" ? (
+              <Check className="size-3.5 shrink-0 text-emerald-500" />
+            ) : (
+              <Terminal className="size-3.5 shrink-0" />
+            )}
+            cURL
+          </button>
+          <button
+            onClick={onClose}
+            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+            aria-label="Close runner"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
       </div>
 
-      <div className="space-y-4 p-4">
-        <div className="rounded-lg border border-border bg-muted/30 p-3">
-          <div className="text-xs text-muted-foreground mb-1">Request URL</div>
-          <div className="break-all font-mono text-xs text-primary">
-            {requestUrlPreview}
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-border bg-muted/20 p-3">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <SlidersHorizontal className="size-3.5" />
-              Environment
-            </div>
-            <div className="text-[11px] text-muted-foreground">
-              Use <span className="font-mono">{"{{name}}"}</span>
-            </div>
-          </div>
-          {environment.length ? (
-            <div className="max-h-28 space-y-1 overflow-auto">
-              {environment.map((item) => (
-                <div
-                  key={item.id}
-                  className="grid grid-cols-[minmax(0,120px)_minmax(0,1fr)] gap-2 rounded-md bg-background/70 px-2 py-1.5 text-xs"
-                >
-                  <div className="truncate font-mono text-foreground">{item.name}</div>
-                  <div className="truncate font-mono text-muted-foreground">{item.value}</div>
-                </div>
+      <div className="space-y-2 border-b border-sidebar-border px-4 py-3">
+        <div className="flex items-center gap-2">
+          <MethodBadge method={endpoint.method} compact />
+          <div className="relative w-56 min-w-0">
+            <input
+              list="runner-base-url-options"
+              value={baseUrlInput}
+              onChange={(e) => setBaseUrlInput(e.target.value)}
+              placeholder="Base URL"
+              className="w-full rounded-md border border-border bg-input-background py-1.5 pl-2 pr-7 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <datalist id="runner-base-url-options">
+              {selectableBaseUrls.map((url) => (
+                <option key={url} value={url} />
               ))}
-            </div>
-          ) : (
-            <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-              No environment variables yet.
-            </div>
-          )}
+            </datalist>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
+          </div>
+          <code className="min-w-0 flex-1 truncate rounded-md bg-muted/50 px-2 py-1.5 font-mono text-xs">
+            {requestPathPreview}
+          </code>
+          <button
+            type="button"
+            onClick={() => copyText(requestUrlPreview, "url")}
+            className="flex size-8 items-center justify-center rounded-md border border-border hover:bg-accent"
+            title="Copy URL"
+          >
+            {copied === "url" ? (
+              <Check className="size-3.5 text-emerald-500" />
+            ) : (
+              <Copy className="size-3.5" />
+            )}
+          </button>
+          <button
+            onClick={send}
+            disabled={loading}
+            className="flex h-8 items-center gap-1.5 rounded-md bg-gradient-to-r from-emerald-500 to-teal-500 px-3 text-sm text-white shadow-sm hover:opacity-90 disabled:opacity-50"
+          >
+            {loading ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+            Send
+          </button>
         </div>
+        <div className="truncate font-mono text-[11px] text-muted-foreground">
+          {requestUrlPreview}
+        </div>
+      </div>
 
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         <MiniTabs<RequestTab>
           value={values.requestTab}
           onChange={setRequestTab}
@@ -1181,14 +1933,15 @@ export function ApiRunner({
             { value: "params", label: "Params" },
             { value: "headers", label: "Headers" },
             { value: "body", label: "Body" },
+            { value: "auth", label: "Auth" },
+            { value: "scripts", label: "Script" },
           ]}
         />
 
         {values.requestTab === "params" && (
-          <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-3">
             {visibleSpecParams.length > 0 && (
-              <div className="space-y-3">
-                <div className="text-xs text-muted-foreground">Spec params</div>
+              <div className="space-y-2">
                 <div className="space-y-2">
                   {visibleSpecParams.map((param) => {
                     const id = paramKey(param);
@@ -1225,7 +1978,7 @@ export function ApiRunner({
                           disabled={isPath}
                           className="size-9 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40 flex items-center justify-center"
                           aria-label="Remove param"
-                          title={isPath ? "Path param không thể xóa" : "Xóa param"}
+                          title={isPath ? "Path parameters cannot be removed" : "Remove parameter"}
                         >
                           <Trash2 className="size-4" />
                         </button>
@@ -1233,43 +1986,41 @@ export function ApiRunner({
                     );
                   })}
                 </div>
-                {hiddenSpecQueryParams.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setValues((current) => ({
-                        ...current,
-                        hiddenParams: current.hiddenParams.filter(
-                          (id) => !hiddenSpecQueryParams.some((p) => paramKey(p) === id)
-                        ),
-                      }))
-                    }
-                    className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-                  >
-                    Khôi phục {hiddenSpecQueryParams.length} spec param đã xóa
-                  </button>
-                )}
               </div>
             )}
 
-            <div className="space-y-2">
-              <div className="text-xs text-muted-foreground">Additional query params</div>
-              <KeyValueEditor
-                rows={values.customParams}
-                emptyText="No custom query params."
-                onChange={(customParams) =>
-                  setValues((current) => ({ ...current, customParams }))
+            {hiddenSpecQueryParams.length > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setValues((current) => ({
+                    ...current,
+                    hiddenParams: current.hiddenParams.filter(
+                      (id) => !hiddenSpecQueryParams.some((p) => paramKey(p) === id)
+                    ),
+                  }))
                 }
-              />
-            </div>
+                className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                Restore {hiddenSpecQueryParams.length} removed parameters
+              </button>
+            )}
+
+            <KeyValueEditor
+              rows={values.customParams}
+              emptyText="No custom query params."
+              showEmptyState={visibleSpecParams.length === 0}
+              onChange={(customParams) =>
+                setValues((current) => ({ ...current, customParams }))
+              }
+            />
           </div>
         )}
 
         {values.requestTab === "headers" && (
-          <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-3">
             {visibleHeaders.length > 0 && (
-              <div className="space-y-3">
-                <div className="text-xs text-muted-foreground">Spec headers</div>
+              <div className="space-y-2">
                 {visibleHeaders.map(({ param, value, helper }) => (
                   <label key={param.name} className="block">
                     <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -1289,16 +2040,14 @@ export function ApiRunner({
               </div>
             )}
 
-            <div className="space-y-2">
-              <div className="text-xs text-muted-foreground">Additional headers</div>
-              <KeyValueEditor
-                rows={values.customHeaders}
-                emptyText="No custom headers."
-                onChange={(customHeaders) =>
-                  setValues((current) => ({ ...current, customHeaders }))
-                }
-              />
-            </div>
+            <KeyValueEditor
+              rows={values.customHeaders}
+              emptyText="No custom headers."
+              showEmptyState={visibleHeaders.length === 0}
+              onChange={(customHeaders) =>
+                setValues((current) => ({ ...current, customHeaders }))
+              }
+            />
           </div>
         )}
 
@@ -1306,48 +2055,38 @@ export function ApiRunner({
           <div className="space-y-4">
             <div className="space-y-2">
               <div className="text-xs text-muted-foreground">Body type</div>
-              <div className="flex flex-wrap gap-2">
-                {BODY_MODES.map((mode) => (
-                  <button
-                    key={mode.value}
-                    onClick={() => setBodyMode(mode.value)}
-                    className={`rounded-md border px-3 py-1.5 text-xs transition-colors inline-flex items-center gap-1.5 ${
-                      bodyMode === mode.value
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border bg-background text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {mode.icon}
-                    {mode.label}
-                  </button>
-                ))}
-              </div>
+              <MiniTabs<BodyMode>
+                value={bodyMode}
+                onChange={setBodyMode}
+                items={BODY_MODES.map((mode) => ({
+                  value: mode.value,
+                  label: (
+                    <>
+                      {mode.icon}
+                      {mode.label}
+                    </>
+                  ),
+                }))}
+              />
             </div>
 
             {bodies.length > 1 && (
               <div className="space-y-2">
                 <div className="text-xs text-muted-foreground">Spec media type</div>
-                <div className="flex flex-wrap gap-2">
-                  {bodies.map((body) => (
-                    <button
-                      key={body.contentType}
-                      onClick={() => onBodyChange(body.contentType)}
-                      className={`rounded-md border px-3 py-1.5 text-xs font-mono transition-colors ${
-                        activeBody?.contentType === body.contentType
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : "border-border bg-background text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {body.contentType}
-                    </button>
-                  ))}
-                </div>
+                <MiniTabs<string>
+                  value={activeBody?.contentType ?? bodies[0]?.contentType ?? ""}
+                  onChange={onBodyChange}
+                  items={bodies.map((body) => ({
+                    value: body.contentType,
+                    label: <span className="font-mono text-xs">{body.contentType}</span>,
+                  }))}
+                />
               </div>
             )}
 
             {bodyMode === "none" && (
               <div className="rounded-lg border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
-                Request này sẽ gửi không kèm body.
+                This request will be sent without a body.
               </div>
             )}
 
@@ -1386,7 +2125,7 @@ export function ApiRunner({
             {bodyMode === "form-data" && (
               <KeyValueEditor
                 rows={formDataRows}
-                emptyText="Chưa có form-data field."
+                emptyText="No form-data fields yet."
                 onChange={(formDataRows) =>
                   setValues((current) => ({ ...current, formDataRows }))
                 }
@@ -1396,7 +2135,7 @@ export function ApiRunner({
             {bodyMode === "form-urlencoded" && (
               <KeyValueEditor
                 rows={formUrlRows}
-                emptyText="Chưa có form-urlencoded field."
+                emptyText="No form-urlencoded fields yet."
                 onChange={(formUrlRows) =>
                   setValues((current) => ({ ...current, formUrlRows }))
                 }
@@ -1405,27 +2144,238 @@ export function ApiRunner({
           </div>
         )}
 
+        {values.requestTab === "auth" && (
+          <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="mr-1 text-xs text-muted-foreground">Auth type</span>
+              {(["none", "bearer", "basic", "api-key", "oauth2"] as AuthType[]).map((type) => (
+                <button
+                  type="button"
+                  key={type}
+                  onClick={() => setAuth({ type })}
+                  className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
+                    values.auth.type === type
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-background text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+
+            {values.auth.type === "none" && (
+              <div className="rounded-lg border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
+                This request will be sent without auth.
+              </div>
+            )}
+
+            {values.auth.type === "bearer" && (
+              <label className="block space-y-1.5">
+                <span className="text-xs text-muted-foreground">Bearer token</span>
+                <input
+                  value={values.auth.bearerToken}
+                  onChange={(event) => setAuth({ bearerToken: event.target.value })}
+                  placeholder="eyJ... or {{token}}"
+                  className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <span className="block text-[11px] text-muted-foreground">
+                  Adds <span className="font-mono">Authorization: Bearer token</span>.
+                </span>
+              </label>
+            )}
+
+            {values.auth.type === "basic" && (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block space-y-1.5">
+                  <span className="text-xs text-muted-foreground">Username</span>
+                  <input
+                    value={values.auth.basicUsername}
+                    onChange={(event) => setAuth({ basicUsername: event.target.value })}
+                    className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-xs text-muted-foreground">Password</span>
+                  <input
+                    type="password"
+                    value={values.auth.basicPassword}
+                    onChange={(event) => setAuth({ basicPassword: event.target.value })}
+                    className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </label>
+              </div>
+            )}
+
+            {values.auth.type === "api-key" && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="block space-y-1.5">
+                    <span className="text-xs text-muted-foreground">Key</span>
+                    <input
+                      value={values.auth.apiKeyName}
+                      onChange={(event) => setAuth({ apiKeyName: event.target.value })}
+                      className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </label>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs text-muted-foreground">Value</span>
+                    <input
+                      value={values.auth.apiKeyValue}
+                      onChange={(event) => setAuth({ apiKeyValue: event.target.value })}
+                      placeholder="{{api_key}}"
+                      className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </label>
+                </div>
+                <div className="flex items-center gap-3 text-xs">
+                  <span className="text-muted-foreground">Add to</span>
+                  {(["header", "query"] as const).map((place) => (
+                    <label key={place} className="inline-flex items-center gap-1">
+                      <input
+                        type="radio"
+                        checked={values.auth.apiKeyIn === place}
+                        onChange={() => setAuth({ apiKeyIn: place })}
+                      />
+                      {place}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {values.auth.type === "oauth2" && (
+              <div className="space-y-3">
+                <label className="block space-y-1.5">
+                  <span className="text-xs text-muted-foreground">Access token</span>
+                  <input
+                    value={values.auth.oauth2AccessToken}
+                    onChange={(event) => setAuth({ oauth2AccessToken: event.target.value })}
+                    placeholder="{{access_token}}"
+                    className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </label>
+                <div className="rounded-md border border-border bg-background/60 p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-xs text-muted-foreground">
+                      Client Credentials token helper
+                    </div>
+                    <button
+                      type="button"
+                      onClick={fetchOAuthToken}
+                      disabled={oauthLoading}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2 text-xs hover:bg-accent disabled:opacity-50"
+                    >
+                      {oauthLoading ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <Send className="size-3.5" />
+                      )}
+                      Get token
+                    </button>
+                  </div>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs text-muted-foreground">Token URL</span>
+                    <input
+                      value={values.auth.oauth2TokenUrl}
+                      onChange={(event) => setAuth({ oauth2TokenUrl: event.target.value })}
+                      placeholder="https://auth.example.com/oauth/token"
+                      className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </label>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <label className="block space-y-1.5">
+                      <span className="text-xs text-muted-foreground">Client ID</span>
+                      <input
+                        value={values.auth.oauth2ClientId}
+                        onChange={(event) => setAuth({ oauth2ClientId: event.target.value })}
+                        className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                    <label className="block space-y-1.5">
+                      <span className="text-xs text-muted-foreground">Client secret</span>
+                      <input
+                        type="password"
+                        value={values.auth.oauth2ClientSecret}
+                        onChange={(event) => setAuth({ oauth2ClientSecret: event.target.value })}
+                        className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </label>
+                  </div>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs text-muted-foreground">Scope</span>
+                    <input
+                      value={values.auth.oauth2Scope}
+                      onChange={(event) => setAuth({ oauth2Scope: event.target.value })}
+                      placeholder="read write"
+                      className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </label>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {values.requestTab === "scripts" && (
+          <div className="space-y-4">
+            <div>
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  Pre-request script
+                </div>
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  pm.environment / pm.request
+                </span>
+              </div>
+              <ScriptEditor
+                value={values.preScript}
+                onChange={(preScript) => setValues((current) => ({ ...current, preScript }))}
+              />
+            </div>
+            <div>
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  Post-response script
+                </div>
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  pm.environment / pm.response
+                </span>
+              </div>
+              <ScriptEditor
+                value={values.postScript}
+                onChange={(postScript) => setValues((current) => ({ ...current, postScript }))}
+              />
+            </div>
+            <div className="rounded-md border border-border bg-muted/30 p-3 text-[11px] leading-relaxed text-muted-foreground">
+              <code className="font-mono">pm.environment.set(name, value)</code> ·{" "}
+              <code className="font-mono">pm.environment.get(name)</code>
+              <br />
+              <code className="font-mono">pm.request.headers.set(k, v)</code> ·{" "}
+              <code className="font-mono">pm.request.body = &quot;...&quot;</code>
+              <br />
+              <code className="font-mono">pm.response.json()</code> ·{" "}
+              <code className="font-mono">pm.response.status</code> ·{" "}
+              <code className="font-mono">console.log(...)</code>
+            </div>
+          </div>
+        )}
+
         {error && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <AlertCircle className="mt-0.5 size-4 shrink-0" />
             {error}
           </div>
         )}
 
-        <div className="flex gap-2">
-          <button
-            onClick={send}
-            disabled={loading}
-            className="flex-1 h-10 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 text-sm flex items-center justify-center gap-2"
-          >
-            {loading ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-            Send
-          </button>
+        <div className="flex justify-end">
           <button
             onClick={resetCurrentEndpoint}
-            className="h-10 rounded-md border border-border px-3 text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
             title="Reset saved values"
           >
             <RotateCcw className="size-4" />
+            Reset
           </button>
         </div>
 
@@ -1436,14 +2386,32 @@ export function ApiRunner({
                 <StatusBadge status={response.status} />
                 <span className="text-sm">{response.statusText || "Response"}</span>
               </div>
-              <div className="text-xs text-muted-foreground">{response.durationMs} ms</div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>
+                  {response.durationMs} ms · {formatSize(response.size)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => copyText(response.rawBody || response.body, "response")}
+                  className="flex h-7 items-center gap-1 rounded-md border border-border px-2 hover:bg-accent hover:text-foreground"
+                >
+                  {copied === "response" ? (
+                    <Check className="size-3.5 text-emerald-500" />
+                  ) : (
+                    <Copy className="size-3.5" />
+                  )}
+                  Copy
+                </button>
+              </div>
             </div>
 
             <MiniTabs<ResponseTab>
               value={values.responseTab}
               onChange={setResponseTab}
               items={[
-                { value: "body", label: "Body" },
+                { value: "pretty", label: "Pretty" },
+                { value: "raw", label: "Raw" },
+                { value: "preview", label: "Preview" },
                 { value: "headers", label: "Headers" },
               ]}
             />
@@ -1567,14 +2535,24 @@ export function ApiRunner({
               )}
             </div>
 
-            {values.responseTab === "body" ? (
+            {values.responseTab === "pretty" && (
               <div className="max-h-[520px] overflow-auto rounded-xl">
                 <CodeBlock
                   code={response.body || "// No content"}
-                  language={response.contentType.includes("json") ? "json" : "text"}
+                  language={responseLanguage(response.contentType)}
                 />
               </div>
-            ) : (
+            )}
+
+            {values.responseTab === "raw" && (
+              <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/20 p-3 font-mono text-xs leading-relaxed">
+                {response.rawBody || response.body || "// No content"}
+              </pre>
+            )}
+
+            {values.responseTab === "preview" && <ResponsePreview response={response} />}
+
+            {values.responseTab === "headers" && (
               <div className="max-h-[420px] overflow-auto rounded-lg border border-border">
                 {response.headers.map(([name, value]) => (
                   <div
@@ -1590,6 +2568,71 @@ export function ApiRunner({
           </div>
         )}
       </div>
+      {consoleOpen && (
+        <div className="flex h-56 flex-col border-t border-sidebar-border bg-[#0d1117] text-[#e6edf3]">
+          <div className="flex items-center justify-between border-b border-white/10 px-3 py-1.5 text-xs">
+            <div className="flex items-center gap-2">
+              <Terminal className="size-3.5 text-sky-400" />
+              <span style={{ fontWeight: 600 }}>Console</span>
+              <span className="text-muted-foreground">{consoleLog.length} entries</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setConsoleLog([])}
+                className="text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                onClick={() => setConsoleOpen(false)}
+                className="flex size-6 items-center justify-center rounded hover:bg-white/10"
+                aria-label="Close console"
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2 font-mono text-[11px] leading-5">
+            {consoleLog.length === 0 ? (
+              <div className="px-1 text-muted-foreground italic">No logs yet.</div>
+            ) : (
+              consoleLog.map((entry) => {
+                const levelClass =
+                  entry.level === "error"
+                    ? "text-rose-400"
+                    : entry.level === "warn"
+                      ? "text-amber-400"
+                      : entry.level === "info"
+                        ? "text-sky-400"
+                        : "text-[#e6edf3]";
+                const sourceClass =
+                  entry.source === "pre"
+                    ? "text-fuchsia-400"
+                    : entry.source === "post"
+                      ? "text-emerald-400"
+                      : "text-muted-foreground";
+                const tag =
+                  entry.source === "pre"
+                    ? "[pre]"
+                    : entry.source === "post"
+                      ? "[post]"
+                      : "[sys]";
+                return (
+                  <div key={entry.id} className="flex gap-2">
+                    <span className="shrink-0 text-muted-foreground/70">
+                      {new Date(entry.time).toLocaleTimeString()}
+                    </span>
+                    <span className={`shrink-0 ${sourceClass}`}>{tag}</span>
+                    <span className={`break-all ${levelClass}`}>{entry.parts.join(" ")}</span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

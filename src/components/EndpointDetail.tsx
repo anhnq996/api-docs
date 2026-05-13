@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import type {
   ApiSpec,
   BodyField,
@@ -10,6 +9,7 @@ import type {
 } from "@/lib/data/apiSpec";
 import { spec as defaultSpec } from "@/lib/data/apiSpec";
 import { ChevronDown, Link2, Play } from "lucide-react";
+import { useState } from "react";
 import { ApiRunner } from "./ApiRunner";
 import { CodeBlock } from "./CodeBlock";
 import { CodeTabs } from "./CodeTabs";
@@ -22,11 +22,11 @@ function ParamTable({ items }: { items: Param[] }) {
       <table className="w-full text-sm">
         <thead className="bg-muted/50">
           <tr className="text-left text-muted-foreground">
-            <th className="px-4 py-2 font-medium">Tên</th>
-            <th className="px-4 py-2 font-medium">Kiểu</th>
-            <th className="px-4 py-2 font-medium">Bắt buộc</th>
-            <th className="px-4 py-2 font-medium">Mô tả</th>
-            <th className="px-4 py-2 font-medium">Ví dụ</th>
+            <th className="px-4 py-2 font-medium">Name</th>
+            <th className="px-4 py-2 font-medium">Type</th>
+            <th className="px-4 py-2 font-medium">Required</th>
+            <th className="px-4 py-2 font-medium">Description</th>
+            <th className="px-4 py-2 font-medium">Example</th>
           </tr>
         </thead>
         <tbody>
@@ -45,7 +45,7 @@ function ParamTable({ items }: { items: Param[] }) {
               </td>
               <td className="px-4 py-2 text-xs">{p.description}</td>
               <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
-                {p.example ?? "—"}
+                {p.example ?? "-"}
               </td>
             </tr>
           ))}
@@ -62,9 +62,9 @@ function BodyTable({ fields }: { fields: BodyField[] }) {
         <thead className="bg-muted/50">
           <tr className="text-left text-muted-foreground">
             <th className="px-4 py-2 font-medium">Field</th>
-            <th className="px-4 py-2 font-medium">Kiểu</th>
-            <th className="px-4 py-2 font-medium">Bắt buộc</th>
-            <th className="px-4 py-2 font-medium">Mô tả</th>
+            <th className="px-4 py-2 font-medium">Type</th>
+            <th className="px-4 py-2 font-medium">Required</th>
+            <th className="px-4 py-2 font-medium">Description</th>
           </tr>
         </thead>
         <tbody>
@@ -90,7 +90,13 @@ function BodyTable({ fields }: { fields: BodyField[] }) {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="space-y-3">
       <h3 className="tracking-tight">{title}</h3>
@@ -103,8 +109,8 @@ function endpointBodies(endpoint: Endpoint): RequestBodySpec[] {
   return endpoint.bodies?.length
     ? endpoint.bodies
     : endpoint.body
-      ? [endpoint.body]
-      : [];
+    ? [endpoint.body]
+    : [];
 }
 
 export function EndpointDetail({
@@ -127,7 +133,8 @@ export function EndpointDetail({
   const [selectedContentType, setActiveContentType] = useState(
     bodies[0]?.contentType ?? ""
   );
-  const active = responses.find((r) => r.status === activeStatus) ?? responses[0];
+  const active =
+    responses.find((r) => r.status === activeStatus) ?? responses[0];
   const activeContentType = bodies.some(
     (body) => body.contentType === selectedContentType
   )
@@ -136,6 +143,8 @@ export function EndpointDetail({
   const activeBody =
     bodies.find((body) => body.contentType === activeContentType) ?? bodies[0];
   const activeBaseUrl = baseUrl ?? spec.info.baseUrl;
+  const baseUrlOptions =
+    spec.info.servers?.map((server) => server.url).filter(Boolean) ?? [];
 
   const path = endpoint.params?.filter((p) => p.in === "path") ?? [];
   const query = endpoint.params?.filter((p) => p.in === "query") ?? [];
@@ -148,8 +157,7 @@ export function EndpointDetail({
           <Link2 className="size-3.5" />
           <span>{projectName ?? "API Reference"}</span>
         </div>
-        <h1 className="tracking-tight">{endpoint.summary}</h1>
-        <p className="text-muted-foreground leading-relaxed">{endpoint.description}</p>
+
         <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/30 p-3 sm:flex-row sm:items-center">
           <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto font-mono text-sm">
             <MethodBadge method={endpoint.method} />
@@ -168,6 +176,10 @@ export function EndpointDetail({
             Run
           </button>
         </div>
+        <h1 className="tracking-tight">{endpoint.summary}</h1>
+        <p className="text-muted-foreground leading-relaxed">
+          {endpoint.description}
+        </p>
       </header>
 
       {headers.length > 0 && (
@@ -208,17 +220,23 @@ export function EndpointDetail({
             </div>
           ) : (
             <div className="text-xs text-muted-foreground">
-              Content-Type: <span className="font-mono">{activeBody.contentType}</span>
+              Content-Type:{" "}
+              <span className="font-mono">{activeBody.contentType}</span>
             </div>
           )}
           {activeBody.description && (
-            <p className="text-xs text-muted-foreground">{activeBody.description}</p>
+            <p className="text-xs text-muted-foreground">
+              {activeBody.description}
+            </p>
           )}
           {activeBody.fields.length > 0 ? (
             <BodyTable fields={activeBody.fields} />
           ) : (
             <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
-              Raw body type: <span className="font-mono">{activeBody.schemaType ?? "any"}</span>
+              Raw body type:{" "}
+              <span className="font-mono">
+                {activeBody.schemaType ?? "any"}
+              </span>
             </div>
           )}
           <CodeBlock
@@ -254,36 +272,31 @@ export function EndpointDetail({
       </Section>
 
       <Section title="Code examples">
-        <CodeTabs endpoint={endpoint} baseUrl={activeBaseUrl} body={activeBody} />
+        <CodeTabs
+          endpoint={endpoint}
+          baseUrl={activeBaseUrl}
+          body={activeBody}
+        />
       </Section>
     </div>
   );
 
   return (
-    <div
-      className={
-        runnerOpen
-          ? "mx-auto w-full max-w-[1500px] px-6 py-8"
-          : "max-w-4xl mx-auto px-8 py-10"
-      }
-    >
-      {runnerOpen ? (
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_600px] xl:items-start">
-          {docs}
-          <ApiRunner
-            endpoint={endpoint}
-            baseUrl={activeBaseUrl}
-            params={[...path, ...query]}
-            headers={headers}
-            bodies={bodies}
-            activeBody={activeBody}
-            onBodyChange={setActiveContentType}
-            storageScope={runnerStorageScope}
-            onClose={() => setRunnerOpen(false)}
-          />
-        </div>
-      ) : (
-        docs
+    <div className="max-w-4xl mx-auto px-8 py-10">
+      {docs}
+      {runnerOpen && (
+        <ApiRunner
+          endpoint={endpoint}
+          baseUrl={activeBaseUrl}
+          baseUrlOptions={baseUrlOptions}
+          params={[...path, ...query]}
+          headers={headers}
+          bodies={bodies}
+          activeBody={activeBody}
+          onBodyChange={setActiveContentType}
+          storageScope={runnerStorageScope}
+          onClose={() => setRunnerOpen(false)}
+        />
       )}
     </div>
   );
@@ -299,7 +312,8 @@ function ResponseDropdown({
   onChange: (s: number) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const active = responses.find((r) => r.status === activeStatus) ?? responses[0];
+  const active =
+    responses.find((r) => r.status === activeStatus) ?? responses[0];
   return (
     <div className="relative inline-block">
       <button
@@ -311,7 +325,9 @@ function ResponseDropdown({
         <span className="flex-1 text-left text-muted-foreground truncate">
           {active.description}
         </span>
-        <ChevronDown className={`size-4 transition-transform ${open ? "rotate-180" : ""}`} />
+        <ChevronDown
+          className={`size-4 transition-transform ${open ? "rotate-180" : ""}`}
+        />
       </button>
       {open && (
         <div className="absolute z-10 mt-1 w-full rounded-md border border-border bg-popover shadow-lg overflow-hidden">
@@ -327,7 +343,9 @@ function ResponseDropdown({
               }`}
             >
               <StatusBadge status={r.status} />
-              <span className="text-muted-foreground truncate">{r.description}</span>
+              <span className="text-muted-foreground truncate">
+                {r.description}
+              </span>
             </button>
           ))}
         </div>

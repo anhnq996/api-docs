@@ -1,64 +1,74 @@
 "use client";
 
-const AUTH_TOKEN_KEY = "api-docs.auth-token.v1";
-const AUTH_USER_KEY = "api-docs.auth-user.v1";
+import type { User } from "@supabase/supabase-js";
+import { getSupabaseClient } from "@/lib/supabase/client";
 
 export type AuthUser = {
-  username: string;
+  id: string;
+  email: string;
   name: string;
 };
 
-export function getConfiguredCredentials() {
+function toAuthUser(user: User): AuthUser {
+  const email = user.email ?? "";
   return {
-    username: process.env.NEXT_PUBLIC_AUTH_USERNAME ?? "admin",
-    password: process.env.NEXT_PUBLIC_AUTH_PASSWORD ?? "admin123",
+    id: user.id,
+    email,
+    name:
+      typeof user.user_metadata?.name === "string" && user.user_metadata.name.trim()
+        ? user.user_metadata.name
+        : email.split("@")[0] || "Admin",
   };
 }
 
-function createToken(username: string) {
-  const random =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return btoa(`${username}:${Date.now()}:${random}`);
+async function ensureAdmin(userId: string) {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("admin_users")
+    .select("user_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return Boolean(data);
 }
 
-export function login(username: string, password: string) {
-  const credentials = getConfiguredCredentials();
-  if (username !== credentials.username || password !== credentials.password) {
+export async function login(email: string, password: string) {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  });
+
+  if (error || !data.user || !data.session) return null;
+
+  const isAdmin = await ensureAdmin(data.user.id);
+  if (!isAdmin) {
+    await supabase.auth.signOut();
+    throw new Error("This account is not allowed to access API Docs.");
+  }
+
+  return { token: data.session.access_token, user: toAuthUser(data.user) };
+}
+
+export async function logout() {
+  await getSupabaseClient().auth.signOut();
+}
+
+export async function getAuthUser(): Promise<AuthUser | null> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.auth.getUser();
+  if (error || !data.user) return null;
+
+  const isAdmin = await ensureAdmin(data.user.id);
+  if (!isAdmin) {
+    await supabase.auth.signOut();
     return null;
   }
 
-  const user: AuthUser = { username, name: username };
-  const token = createToken(username);
-  localStorage.setItem(AUTH_TOKEN_KEY, token);
-  localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
-  return { token, user };
+  return toAuthUser(data.user);
 }
 
-export function logout() {
-  localStorage.removeItem(AUTH_TOKEN_KEY);
-  localStorage.removeItem(AUTH_USER_KEY);
-}
-
-export function getAuthToken() {
-  return localStorage.getItem(AUTH_TOKEN_KEY);
-}
-
-export function getAuthUser(): AuthUser | null {
-  const token = getAuthToken();
-  if (!token) return null;
-
-  try {
-    const raw = localStorage.getItem(AUTH_USER_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as AuthUser;
-  } catch {
-    logout();
-    return null;
-  }
-}
-
-export function isAuthenticated() {
-  return Boolean(getAuthToken());
+export async function isAuthenticated() {
+  return Boolean(await getAuthUser());
 }

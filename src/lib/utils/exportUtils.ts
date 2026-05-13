@@ -130,8 +130,8 @@ function endpointHtml(spec: ApiSpec, endpoint: Endpoint) {
   const queryParams = (endpoint.params ?? []).filter((param) => param.in === "query");
   const headers = endpoint.headers ?? [];
   const bodies = endpointBodies(endpoint);
-  const cols5 = ["Tên", "Kiểu", "Bắt buộc", "Mô tả", "Ví dụ"];
-  const cols4 = ["Field", "Kiểu", "Bắt buộc", "Mô tả"];
+  const cols5 = ["Name", "Type", "Required", "Description", "Example"];
+  const cols4 = ["Field", "Type", "Required", "Description"];
 
   return `
 <div class="ep" id="${esc(endpoint.id)}">
@@ -359,7 +359,7 @@ function renderSidebar() {
     const open = state.openGroups[tag.name];
     const endpoints = tag.endpoints || [];
     return '<div class="group ' + (open ? "" : "closed") + '">' +
-      '<button class="group-head" data-group="' + escapeHtml(tag.name) + '"><span class="chev">⌄</span><span style="flex:1;text-align:left">' + escapeHtml(tag.name) + '</span><span>' + endpoints.length + '</span></button>' +
+      '<button class="group-head" data-group="' + escapeHtml(tag.name) + '"><span class="chev">v</span><span style="flex:1;text-align:left">' + escapeHtml(tag.name) + '</span><span>' + endpoints.length + '</span></button>' +
       '<div class="group-body">' +
         endpoints.map((endpoint) =>
           '<button class="ep-link ' + (active && active.id === endpoint.id ? "active" : "") + '" data-endpoint="' + escapeHtml(endpoint.id) + '">' +
@@ -401,7 +401,7 @@ function paramTable(title, items) {
     escapeHtml(param.description),
     '<span class="mono dim">' + escapeHtml(param.example ?? "-") + '</span>'
   ]);
-  return '<section class="section"><h2>' + escapeHtml(title) + '</h2>' + table(["Tên","Kiểu","Bắt buộc","Mô tả","Ví dụ"], rows) + '</section>';
+  return '<section class="section"><h2>' + escapeHtml(title) + '</h2>' + table(["Name","Type","Required","Description","Example"], rows) + '</section>';
 }
 function bodyTable(body) {
   if (!body) return "";
@@ -413,7 +413,7 @@ function bodyTable(body) {
     '<span class="mono dim">' + escapeHtml(field.example ?? "-") + '</span>'
   ]);
   return '<section class="section"><h2>Request Body</h2><p class="dim">Content-Type: <span class="mono">' + escapeHtml(body.contentType) + '</span></p>' +
-    table(["Field","Kiểu","Bắt buộc","Mô tả","Ví dụ"], rows) +
+    table(["Field","Type","Required","Description","Example"], rows) +
     '<div class="code-card" style="margin-top:12px"><pre><code class="language-json">' + escapeHtml(json(body.example)) + '</code></pre></div></section>';
 }
 function bodyTableForEndpoint(endpoint) {
@@ -500,7 +500,7 @@ function renderDetail() {
   const endpoint = activeEndpoint();
   const detail = document.getElementById("detail");
   if (!endpoint) {
-    detail.innerHTML = '<div class="empty">Không tìm thấy endpoint hợp lệ.</div>';
+    detail.innerHTML = '<div class="empty">No valid endpoint found.</div>';
     return;
   }
   const pathParams = (endpoint.params || []).filter((param) => param.in === "path");
@@ -693,7 +693,7 @@ export function exportPDF(
   const html = buildHtmlString(spec, displayTitle, true, options);
   const win = window.open("", "_blank", "width=900,height=700");
   if (!win) {
-    alert("Vui lòng cho phép popup để xuất PDF.");
+    alert("Please allow popups to export PDF.");
     return;
   }
   win.document.write(html);
@@ -713,7 +713,7 @@ function toOpenApiType(type: string): { type: string; items?: { type: string } }
   return { type: "string" };
 }
 
-export function exportSwagger(
+export function buildOpenApiDocument(
   rawSpec: ApiSpec,
   displayTitle = rawSpec.info.title,
   options: ExportOptions = {}
@@ -818,6 +818,16 @@ export function exportSwagger(
     paths,
   };
 
+  return openapi;
+}
+
+export function exportSwagger(
+  rawSpec: ApiSpec,
+  displayTitle = rawSpec.info.title,
+  options: ExportOptions = {}
+) {
+  const openapi = buildOpenApiDocument(rawSpec, displayTitle, options);
+
   download(
     `${slugify(displayTitle)}-swagger.json`,
     new Blob([JSON.stringify(openapi, null, 2)], { type: "application/json" })
@@ -882,7 +892,7 @@ type WordChild = Paragraph | Table;
 function paramRows(title: string, params: Param[]) {
   if (!params.length) return [];
   return [
-    [title, "Kiểu", "Bắt buộc", "Mô tả", "Ví dụ"],
+    [title, "Type", "Required", "Description", "Example"],
     ...params.map((param) => [
       param.name,
       param.type,
@@ -896,7 +906,7 @@ function paramRows(title: string, params: Param[]) {
 function bodyRows(fields: BodyField[]) {
   if (!fields.length) return [];
   return [
-    ["Field", "Kiểu", "Bắt buộc", "Mô tả", "Ví dụ"],
+    ["Field", "Type", "Required", "Description", "Example"],
     ...fields.map((field) => [
       field.name,
       field.type,
@@ -909,7 +919,7 @@ function bodyRows(fields: BodyField[]) {
 
 function responseRows(responses: ResponseSpec[]) {
   return [
-    ["Status", "Mô tả"],
+    ["Status", "Description"],
     ...responses.map((response) => [response.status, response.description]),
   ];
 }
@@ -931,14 +941,14 @@ export async function exportWord(
     docParagraph(`Base URL: ${spec.info.baseUrl}`),
     docParagraph(spec.info.description),
     new Paragraph({
-      text: "Mục lục endpoints",
+      text: "Endpoint index",
       heading: HeadingLevel.HEADING_1,
       spacing: { before: 240, after: 120 },
     }),
   ];
 
   pushTable(children, [
-    ["Method", "Path", "Tên", "Nhóm"],
+    ["Method", "Path", "Name", "Group"],
     ...spec.tags.flatMap((tag) =>
       tag.endpoints.map((endpoint) => [endpoint.method, endpoint.path, endpoint.summary, tag.name])
     ),

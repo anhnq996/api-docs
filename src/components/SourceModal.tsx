@@ -18,7 +18,12 @@ import { convertOpenApi } from "@/lib/utils/openapiConverter";
 
 interface Props {
   onClose: () => void;
-  onLoad: (spec: ApiSpec, sourceName: string) => void;
+  onLoad: (
+    spec: ApiSpec,
+    sourceName: string,
+    rawText?: string,
+    rawFormat?: "json" | "yaml"
+  ) => void | Promise<void>;
   currentSourceName?: string;
 }
 
@@ -68,8 +73,15 @@ function parseSpecText(text: string, filename = ""): ApiSpec {
   } else {
     doc = yaml.load(trimmed);
   }
-  if (!doc || typeof doc !== "object") throw new Error("File không hợp lệ");
+  if (!doc || typeof doc !== "object") throw new Error("Invalid file");
   return convertOpenApi(doc);
+}
+
+function detectFormat(filename: string, text: string): "json" | "yaml" {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".json")) return "json";
+  if (lower.endsWith(".yaml") || lower.endsWith(".yml")) return "yaml";
+  return text.trim().startsWith("{") ? "json" : "yaml";
 }
 
 function uniqueEndpointId(endpoint: Endpoint, usedIds: Set<string>, sourceIndex: number) {
@@ -129,7 +141,7 @@ function mergeApiSpecs(items: { spec: ApiSpec; sourceName: string }[]): ApiSpec 
       version: first.spec.info.version,
       description:
         first.spec.info.description ||
-        `Gộp từ ${items.map((item) => item.sourceName).join(", ")}`,
+        `Merged from ${items.map((item) => item.sourceName).join(", ")}`,
       baseUrl: servers[0]?.url ?? first.spec.info.baseUrl,
       servers,
     },
@@ -152,10 +164,10 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
     try {
       const text = await file.text();
       const parsed = parseSpecText(text, file.name.toLowerCase());
-      onLoad(parsed, file.name);
+      await onLoad(parsed, file.name, text, detectFormat(file.name, text));
       onClose();
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "Không thể đọc file"));
+      setError(getErrorMessage(e, "Could not read the file"));
     } finally {
       setLoading(false);
     }
@@ -170,7 +182,7 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
       path: getDisplayPath(file),
       size: file.size,
       status: isOpenApiFile(file) ? "pending" : "skipped",
-      message: isOpenApiFile(file) ? undefined : "Bỏ qua",
+      message: isOpenApiFile(file) ? undefined : "Skipped",
     }));
 
     setError(null);
@@ -188,12 +200,12 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
         const text = await file.text();
         const parsed = parseSpecText(text, file.name.toLowerCase());
         loaded.push({ spec: parsed, sourceName: getDisplayPath(file) });
-        next[index] = { ...next[index], status: "loaded", message: "Đã đọc" };
+        next[index] = { ...next[index], status: "loaded", message: "Loaded" };
       } catch (e: unknown) {
         next[index] = {
           ...next[index],
           status: "error",
-          message: getErrorMessage(e, "Không đọc được"),
+          message: getErrorMessage(e, "Could not read"),
         };
       }
       setFolderFiles([...next]);
@@ -201,14 +213,14 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
 
     try {
       if (!loaded.length) {
-        throw new Error("Không tìm thấy file OpenAPI hợp lệ trong thư mục");
+        throw new Error("No valid OpenAPI files were found in the folder");
       }
       const merged = mergeApiSpecs(loaded);
       const rootName = loaded[0].sourceName.split(/[\\/]/)[0] || "Folder";
-      onLoad(merged, `${rootName} (${loaded.length} specs)`);
+      await onLoad(merged, `${rootName} (${loaded.length} specs)`);
       onClose();
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "Không thể gộp thư mục"));
+      setError(getErrorMessage(e, "Could not merge the folder"));
     } finally {
       setLoading(false);
     }
@@ -223,10 +235,10 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
       const parsed = parseSpecText(text, url.toLowerCase());
-      onLoad(parsed, url.trim());
+      await onLoad(parsed, url.trim(), text, detectFormat(url, text));
       onClose();
     } catch (e: unknown) {
-      setError(getErrorMessage(e, "Không thể tải URL"));
+      setError(getErrorMessage(e, "Could not load the URL"));
     } finally {
       setLoading(false);
     }
@@ -244,7 +256,7 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div className="flex items-center gap-2">
             <FileJson className="size-5 text-primary" />
-            <div style={{ fontWeight: 600 }}>Nguồn OpenAPI</div>
+            <div style={{ fontWeight: 600 }}>OpenAPI Source</div>
           </div>
           <button
             onClick={onClose}
@@ -258,7 +270,7 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
         <div className="px-5 pt-4">
           {currentSourceName && (
             <div className="text-xs text-muted-foreground mb-3 truncate">
-              Hiện tại: <span className="font-mono text-foreground">{currentSourceName}</span>
+              Current: <span className="font-mono text-foreground">{currentSourceName}</span>
             </div>
           )}
           <div className="grid grid-cols-3 gap-1 p-1 rounded-md bg-muted/50 mb-4">
@@ -276,7 +288,7 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
                 tab === "folder" ? "bg-background shadow" : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              <FolderOpen className="size-3.5" /> Thư mục
+              <FolderOpen className="size-3.5" /> Folder
             </button>
             <button
               onClick={() => setTab("url")}
@@ -284,7 +296,7 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
                 tab === "url" ? "bg-background shadow" : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              <LinkIcon className="size-3.5" /> Từ URL
+              <LinkIcon className="size-3.5" /> From URL
             </button>
           </div>
         </div>
@@ -302,9 +314,9 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
               className="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:bg-accent/40 transition-colors"
             >
               <Upload className="size-8 mx-auto mb-3 text-muted-foreground" />
-              <div className="text-sm mb-1">Kéo thả hoặc click để chọn file</div>
+              <div className="text-sm mb-1">Drop a file here or click to choose one</div>
               <div className="text-xs text-muted-foreground">
-                Hỗ trợ .json, .yaml, .yml (OpenAPI 3.x)
+                Supports .json, .yaml, .yml (OpenAPI 3.x)
               </div>
               <input
                 ref={fileRef}
@@ -331,9 +343,9 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
                 className="border-2 border-dashed border-border rounded-lg p-6 text-center cursor-pointer hover:bg-accent/40 transition-colors"
               >
                 <FolderOpen className="size-8 mx-auto mb-3 text-muted-foreground" />
-                <div className="text-sm mb-1">Chọn hoặc kéo thả thư mục OpenAPI</div>
+                <div className="text-sm mb-1">Choose or drop an OpenAPI folder</div>
                 <div className="text-xs text-muted-foreground">
-                  Tự đọc .json, .yaml, .yml và gộp các spec hợp lệ
+                  Reads .json, .yaml, .yml files and merges valid specs
                 </div>
                 <input
                   ref={folderRef}
@@ -376,7 +388,7 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
                           <div className="truncate text-xs font-mono">{file.path}</div>
                           <div className="text-[11px] text-muted-foreground">
                             {formatSize(file.size)}
-                            {file.message ? ` · ${file.message}` : ""}
+                            {file.message ? ` - ${file.message}` : ""}
                           </div>
                         </div>
                       </div>
@@ -408,14 +420,14 @@ export function SourceModal({ onClose, onLoad, currentSourceName }: Props) {
                 ) : (
                   <LinkIcon className="size-4" />
                 )}
-                Tải spec
+                Load spec
               </button>
             </div>
           )}
 
           {loading && tab !== "url" && (
             <div className="flex items-center gap-2 mt-3 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" /> Đang xử lý...
+              <Loader2 className="size-4 animate-spin" /> Processing...
             </div>
           )}
           {error && (

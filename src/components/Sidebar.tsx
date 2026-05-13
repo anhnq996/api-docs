@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronRight,
+  Code2,
   Download,
   Moon,
   Search,
@@ -24,6 +25,8 @@ interface Props {
   onQueryChange: (v: string) => void;
   onExport: () => void;
   onOpenSource: () => void;
+  onToggleEditor?: () => void;
+  editorOpen?: boolean;
   onBackToProjects?: () => void;
   selectedBaseUrl?: string;
   onBaseUrlChange?: (url: string) => void;
@@ -38,6 +41,8 @@ export function Sidebar({
   onQueryChange,
   onExport,
   onOpenSource,
+  onToggleEditor,
+  editorOpen = false,
   onBackToProjects,
   selectedBaseUrl,
   onBaseUrlChange,
@@ -65,7 +70,7 @@ export function Sidebar({
               onClick={onBackToProjects}
               className="size-8 rounded-lg bg-gradient-to-br from-indigo-500 to-fuchsia-500 flex items-center justify-center text-white flex-shrink-0 hover:opacity-90"
               aria-label="Back to projects"
-              title="Quay lại danh sách dự án"
+              title="Back to projects"
             >
               <ArrowLeft className="size-4" />
             </button>
@@ -96,6 +101,20 @@ export function Sidebar({
           >
             <Download className="size-4" />
           </button>
+          {onToggleEditor && (
+            <button
+              onClick={onToggleEditor}
+              className={`size-8 rounded-md border transition-colors flex items-center justify-center ${
+                editorOpen
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "border-border hover:bg-accent text-muted-foreground hover:text-foreground"
+              }`}
+              aria-label="Edit OpenAPI"
+              title="View and edit OpenAPI"
+            >
+              <Code2 className="size-4" />
+            </button>
+          )}
           <button
             onClick={onOpenSource}
             className="size-8 rounded-md border border-border hover:bg-accent transition-colors flex items-center justify-center text-muted-foreground hover:text-foreground"
@@ -112,7 +131,7 @@ export function Sidebar({
           <input
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
-            placeholder="Tìm endpoint..."
+            placeholder="Search endpoints..."
             className="w-full pl-9 pr-3 py-2 rounded-md bg-input-background border border-border focus:outline-none focus:ring-2 focus:ring-ring text-sm"
           />
         </div>

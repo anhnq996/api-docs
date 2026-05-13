@@ -154,7 +154,7 @@ export function CodeBlock({
           {copied ? (
             <>
               <Check className="size-3.5" />
-              <span>Đã copy!</span>
+              <span>Copied!</span>
             </>
           ) : (
             <>

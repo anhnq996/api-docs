@@ -51,7 +51,7 @@ export function ExportModal({
       id: "html",
       icon: <FileCode2 className="size-7" />,
       label: "HTML",
-      desc: "Trang tĩnh hoàn chỉnh với sidebar, syntax highlighting. Dùng trực tiếp trên trình duyệt.",
+      desc: "A complete static page with sidebar navigation and syntax highlighting. Runs directly in the browser.",
       accent: "text-sky-400",
       bg: "bg-sky-500/10 dark:bg-sky-500/10 group-hover:bg-sky-500/20",
       border: "border-sky-500/30 group-hover:border-sky-400/60",
@@ -61,7 +61,7 @@ export function ExportModal({
       id: "pdf",
       icon: <FileText className="size-7" />,
       label: "PDF",
-      desc: "Mở print dialog của trình duyệt. Mỗi API group là một section.",
+      desc: "Opens the browser print dialog. Each API group is rendered as a section.",
       accent: "text-rose-400",
       bg: "bg-rose-500/10 group-hover:bg-rose-500/20",
       border: "border-rose-500/30 group-hover:border-rose-400/60",
@@ -71,7 +71,7 @@ export function ExportModal({
       id: "swagger",
       icon: <FileJson2 className="size-7" />,
       label: "Swagger / OpenAPI 3.0",
-      desc: "File JSON chuẩn OpenAPI 3.0.3, dùng được với Swagger UI, Postman, Insomnia.",
+      desc: "A standard OpenAPI 3.0.3 JSON file for Swagger UI, Postman, and Insomnia.",
       accent: "text-emerald-400",
       bg: "bg-emerald-500/10 group-hover:bg-emerald-500/20",
       border: "border-emerald-500/30 group-hover:border-emerald-400/60",
@@ -81,7 +81,7 @@ export function ExportModal({
       id: "word",
       icon: <FileType2 className="size-7" />,
       label: "Word (.docx)",
-      desc: "Tài liệu Word đầy đủ: metadata, mục lục endpoint, params, body và toàn bộ responses.",
+      desc: "A complete Word document with metadata, endpoint index, parameters, body, and responses.",
       accent: "text-violet-400",
       bg: "bg-violet-500/10 group-hover:bg-violet-500/20",
       border: "border-violet-500/30 group-hover:border-violet-400/60",
@@ -122,7 +122,7 @@ export function ExportModal({
                 Export API Docs
               </h2>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Chọn định dạng xuất tài liệu
+                Choose an export format
               </p>
             </div>
           </div>

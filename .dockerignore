@@ -1,0 +1,9 @@
+node_modules
+.next
+out
+.git
+.env
+.env.*
+dev-server*.log
+yarn-error.log
+*.tsbuildinfo
