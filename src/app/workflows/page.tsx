@@ -11,6 +11,7 @@ import {
   History,
   Layers,
   Loader2,
+  Lock,
   LogOut,
   Moon,
   Play,
@@ -19,12 +20,14 @@ import {
   Search,
   Sun,
   Trash2,
+  UserPlus,
   Workflow as WorkflowIcon,
   XCircle,
   Zap,
   type LucideIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { MemberAvatars, MemberPickerModal } from "@/components/MemberPickerModal";
 import { HistoryView, MultiWorkflowRunner } from "@/components/workflow/WorkflowRuntimeViews";
 import { useTheme } from "@/components/ThemeProvider";
 import { getAuthUser, logout, type AuthUser } from "@/lib/auth";
@@ -50,7 +53,12 @@ import {
   type WorkflowRunStatus,
   type WorkflowStep,
 } from "@/lib/data/workflowData";
-import { deleteWorkflow, loadWorkflows, upsertWorkflow } from "@/lib/data/workflows";
+import {
+  deleteWorkflow,
+  loadWorkflows,
+  updateWorkflowMembers,
+  upsertWorkflow,
+} from "@/lib/data/workflows";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 const BODY_MODES: BodyMode[] = ["none", "raw", "form-data", "url-encoded"];
@@ -81,6 +89,8 @@ const VIEW_TABS: { id: MainView; label: string; Icon: LucideIcon }[] = [
   { id: "history", label: "History", Icon: History },
 ];
 
+const WORKFLOW_HISTORY_STORAGE_VERSION = 1;
+
 const METHOD_COLORS: Record<HttpMethod, string> = {
   GET: "text-emerald-500 bg-emerald-500/10 border-emerald-500/30",
   POST: "text-blue-500 bg-blue-500/10 border-blue-500/30",
@@ -100,6 +110,45 @@ const RUN_STATUS_UI: Record<WorkflowRunStatus, string> = {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function workflowHistoryStorageKey(userId: string) {
+  return `api-docs.workflow-history.v${WORKFLOW_HISTORY_STORAGE_VERSION}.${userId}`;
+}
+
+function loadStoredWorkflowHistory(userId: string) {
+  try {
+    const raw = localStorage.getItem(workflowHistoryStorageKey(userId));
+    if (!raw) return { runResults: [], callHistory: [] };
+    const parsed = JSON.parse(raw) as {
+      runResults?: WorkflowRunResult[];
+      callHistory?: CallRecord[];
+    };
+    return {
+      runResults: Array.isArray(parsed.runResults) ? parsed.runResults : [],
+      callHistory: Array.isArray(parsed.callHistory) ? parsed.callHistory : [],
+    };
+  } catch {
+    return { runResults: [], callHistory: [] };
+  }
+}
+
+function saveStoredWorkflowHistory(
+  userId: string,
+  runResults: WorkflowRunResult[],
+  callHistory: CallRecord[]
+) {
+  try {
+    localStorage.setItem(
+      workflowHistoryStorageKey(userId),
+      JSON.stringify({
+        runResults: runResults.slice(0, 100),
+        callHistory: callHistory.slice(0, 1000),
+      })
+    );
+  } catch {
+    // Ignore storage quota/private mode failures; history still works in memory.
+  }
 }
 
 function asNumber(value: string, fallback: number) {
@@ -430,6 +479,9 @@ function WorkflowStepList({
                     {step.request.path}
                   </span>
                 </div>
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  {step.execution?.iterations ?? 1}x iterations / {step.execution?.rampUpDuration ?? 0}ms ramp-up
+                </div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 <input
@@ -511,8 +563,17 @@ function StepEditor({
   }
 
   const request = step.request;
+  const execution = step.execution ?? {
+    iterations: 1,
+    rampUpDuration: 0,
+    delay: 500,
+    timeout: 30000,
+    retryCount: 0,
+  };
   const updateRequest = (patch: Partial<typeof request>) =>
     onUpdate({ request: { ...request, ...patch } });
+  const updateExecution = (patch: Partial<typeof execution>) =>
+    onUpdate({ execution: { ...execution, ...patch } });
 
   return (
     <aside className="w-[360px] shrink-0 border-l border-border bg-card flex flex-col min-h-0">
@@ -570,6 +631,42 @@ function StepEditor({
               ))}
             </select>
           )}
+        </section>
+
+        <section className="space-y-2">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Execution</div>
+          <div className="grid grid-cols-2 gap-2">
+            <ConfigNumber
+              label="Iterations"
+              min={1}
+              value={execution.iterations}
+              onChange={(iterations) => updateExecution({ iterations })}
+            />
+            <ConfigNumber
+              label="Ramp-up ms"
+              min={0}
+              value={execution.rampUpDuration}
+              onChange={(rampUpDuration) => updateExecution({ rampUpDuration })}
+            />
+            <ConfigNumber
+              label="Delay ms"
+              min={0}
+              value={execution.delay}
+              onChange={(delay) => updateExecution({ delay })}
+            />
+            <ConfigNumber
+              label="Timeout ms"
+              min={1000}
+              value={execution.timeout}
+              onChange={(timeout) => updateExecution({ timeout })}
+            />
+            <ConfigNumber
+              label="Retries"
+              min={0}
+              value={execution.retryCount}
+              onChange={(retryCount) => updateExecution({ retryCount })}
+            />
+          </div>
         </section>
 
         <section className="space-y-2">
@@ -819,12 +916,14 @@ export default function WorkflowsPage() {
   const router = useRouter();
   const { theme, toggleTheme } = useTheme();
   const cancelRunRef = useRef(false);
+  const historyStorageReadyRef = useRef(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [endpointSearch, setEndpointSearch] = useState("");
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -834,6 +933,7 @@ export default function WorkflowsPage() {
   const [mainView, setMainView] = useState<MainView>("builder");
   const [runResults, setRunResults] = useState<WorkflowRunResult[]>([]);
   const [callHistory, setCallHistory] = useState<CallRecord[]>([]);
+  const [showMembers, setShowMembers] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -866,15 +966,50 @@ export default function WorkflowsPage() {
     };
   }, [router]);
 
+  useEffect(() => {
+    if (!user) {
+      historyStorageReadyRef.current = false;
+      return;
+    }
+
+    historyStorageReadyRef.current = false;
+    queueMicrotask(() => {
+      const stored = loadStoredWorkflowHistory(user.id);
+      setRunResults(stored.runResults);
+      setCallHistory(stored.callHistory);
+      historyStorageReadyRef.current = true;
+    });
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !historyStorageReadyRef.current) return;
+    saveStoredWorkflowHistory(user.id, runResults, callHistory);
+  }, [callHistory, runResults, user]);
+
   const activeWorkflow = useMemo(
     () => workflows.find((workflow) => workflow.id === activeWorkflowId) ?? null,
     [activeWorkflowId, workflows]
   );
+  const canEditWorkflow = (activeWorkflow?.ownerId ?? user?.id) === user?.id;
   const activeProject = useMemo(
     () => projects.find((project) => project.id === activeWorkflow?.projectId) ?? null,
     [activeWorkflow?.projectId, projects]
   );
   const endpoints = useMemo(() => allEndpoints(activeProject), [activeProject]);
+  const filteredEndpoints = useMemo(() => {
+    const query = endpointSearch.trim().toLowerCase();
+    if (!query) return endpoints;
+    return endpoints.filter((endpoint) =>
+      [
+        endpoint.method,
+        endpoint.path,
+        endpoint.summary,
+        endpoint.tagName,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query))
+    );
+  }, [endpointSearch, endpoints]);
   const selectedStep = useMemo(
     () => activeWorkflow?.steps.find((step) => step.id === selectedStepId) ?? null,
     [activeWorkflow, selectedStepId]
@@ -890,6 +1025,7 @@ export default function WorkflowsPage() {
   }
 
   const markWorkflow = (next: Workflow) => {
+    if ((next.ownerId ?? user.id) !== user.id) return;
     setDirty(true);
     setWorkflows((list) =>
       list.map((workflow) => (workflow.id === next.id ? { ...next, updatedAt: new Date().toISOString() } : workflow))
@@ -897,7 +1033,7 @@ export default function WorkflowsPage() {
   };
 
   const updateActiveWorkflow = (patch: Partial<Workflow>) => {
-    if (!activeWorkflow) return;
+    if (!activeWorkflow || !canEditWorkflow) return;
     markWorkflow({ ...activeWorkflow, ...patch });
   };
 
@@ -907,7 +1043,7 @@ export default function WorkflowsPage() {
   };
 
   const updateStep = (stepId: string, patch: Partial<WorkflowStep>) => {
-    if (!activeWorkflow) return;
+    if (!activeWorkflow || !canEditWorkflow) return;
     updateActiveWorkflow({
       steps: activeWorkflow.steps.map((step) =>
         step.id === stepId ? { ...step, ...patch } : step
@@ -940,6 +1076,10 @@ export default function WorkflowsPage() {
 
   const saveWorkflow = async () => {
     if (!activeWorkflow) return;
+    if (!canEditWorkflow) {
+      setError("Only the workflow owner can save changes.");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -953,7 +1093,20 @@ export default function WorkflowsPage() {
     }
   };
 
+  const saveWorkflowMembers = async (memberIds: string[]) => {
+    if (!activeWorkflow) return;
+    if (!canEditWorkflow) throw new Error("Only the workflow owner can update members.");
+    setError(null);
+    await updateWorkflowMembers(activeWorkflow.id, memberIds);
+    setWorkflows((list) =>
+      list.map((workflow) =>
+        workflow.id === activeWorkflow.id ? { ...workflow, memberIds } : workflow
+      )
+    );
+  };
+
   const removeWorkflow = async (workflow: Workflow) => {
+    if ((workflow.ownerId ?? user.id) !== user.id) return;
     if (!confirm(`Delete workflow "${workflow.name}"?`)) return;
     setError(null);
     try {
@@ -970,21 +1123,21 @@ export default function WorkflowsPage() {
   };
 
   const addBlankStep = () => {
-    if (!activeWorkflow) return;
+    if (!activeWorkflow || !canEditWorkflow) return;
     const step = makeBlankStep();
     updateActiveWorkflow({ steps: [...activeWorkflow.steps, step] });
     setSelectedStepId(step.id);
   };
 
   const addEndpointStep = (endpoint: Endpoint) => {
-    if (!activeWorkflow || !activeProject) return;
+    if (!activeWorkflow || !activeProject || !canEditWorkflow) return;
     const step = makeStepFromEndpoint(activeProject, endpoint);
     updateActiveWorkflow({ steps: [...activeWorkflow.steps, step] });
     setSelectedStepId(step.id);
   };
 
   const duplicateStep = (stepId: string) => {
-    if (!activeWorkflow) return;
+    if (!activeWorkflow || !canEditWorkflow) return;
     const original = activeWorkflow.steps.find((step) => step.id === stepId);
     if (!original) return;
     const copy = {
@@ -1001,14 +1154,14 @@ export default function WorkflowsPage() {
   };
 
   const deleteStep = (stepId: string) => {
-    if (!activeWorkflow) return;
+    if (!activeWorkflow || !canEditWorkflow) return;
     const steps = activeWorkflow.steps.filter((step) => step.id !== stepId);
     updateActiveWorkflow({ steps });
     if (selectedStepId === stepId) setSelectedStepId(steps[0]?.id ?? null);
   };
 
   const moveStep = (stepId: string, direction: "up" | "down") => {
-    if (!activeWorkflow) return;
+    if (!activeWorkflow || !canEditWorkflow) return;
     const steps = [...activeWorkflow.steps];
     const index = steps.findIndex((step) => step.id === stepId);
     const target = direction === "up" ? index - 1 : index + 1;
@@ -1035,30 +1188,58 @@ export default function WorkflowsPage() {
 
     for (const step of enabledSteps) {
       if (cancelRunRef.current) break;
+      const execution = step.execution ?? {
+        iterations: 1,
+        rampUpDuration: 0,
+        delay: 500,
+        timeout: 30000,
+        retryCount: 0,
+      };
+      const iterations = Math.max(1, Math.floor(execution.iterations));
+      const retryCount = Math.max(0, Math.floor(execution.retryCount));
+      const calls: CallRecord[] = [];
 
       if (options.trackSteps) {
         setStepStatuses((current) => ({ ...current, [step.id]: "running" }));
         setSelectedStepId(step.id);
       }
 
-      await sleep(options.trackSteps ? 650 : 450 + Math.random() * 500);
-      if (cancelRunRef.current) break;
+      if (execution.rampUpDuration > 0) {
+        await sleep(Math.min(execution.rampUpDuration, options.trackSteps ? 1200 : 600));
+      }
 
-      const passed = Math.random() > 0.15;
-      const status: StepStatus = passed ? "passed" : "failed";
-      const call = makeSimulatedCall(workflow, step, passed);
+      let stepPassed = true;
+      for (let iteration = 0; iteration < iterations; iteration += 1) {
+        if (cancelRunRef.current) break;
+        let iterationPassed = false;
+        for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+          await sleep(options.trackSteps ? 300 : 180 + Math.random() * 240);
+          if (cancelRunRef.current) break;
+          const passed = Math.random() > 0.15;
+          calls.push(makeSimulatedCall(workflow, step, passed));
+          iterationPassed = passed;
+          if (passed) break;
+        }
+        stepPassed = stepPassed && iterationPassed;
+        if (!iterationPassed && workflow.config.stopOnError) break;
+        if (iteration < iterations - 1 && execution.delay > 0) {
+          await sleep(Math.min(execution.delay, options.trackSteps ? 800 : 400));
+        }
+      }
+
+      const status: StepStatus = stepPassed ? "passed" : "failed";
       stepResults.push({
         stepId: step.id,
         stepName: step.name,
         status,
-        calls: [call],
+        calls,
       });
 
       if (options.trackSteps) {
         setStepStatuses((current) => ({ ...current, [step.id]: status }));
       }
 
-      if (!passed && workflow.config.stopOnError) break;
+      if (!stepPassed && workflow.config.stopOnError) break;
       await sleep(options.trackSteps ? 150 : 100);
     }
 
@@ -1202,7 +1383,7 @@ export default function WorkflowsPage() {
       </header>
 
       <div className="border-b border-border bg-card px-4 py-2">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center bg-muted rounded-lg p-0.5">
             {VIEW_TABS.map(({ id, label, Icon }) => (
               <button
@@ -1218,7 +1399,7 @@ export default function WorkflowsPage() {
               </button>
             ))}
           </div>
-          <div className="hidden text-xs text-muted-foreground sm:block">
+          <div className="ml-auto hidden text-xs text-muted-foreground sm:block">
             {runResults.length} report{runResults.length === 1 ? "" : "s"} / {callHistory.length} call records
           </div>
         </div>
@@ -1233,7 +1414,7 @@ export default function WorkflowsPage() {
       <div className="flex-1 min-h-0 flex">
         {mainView === "builder" ? (
           <>
-        <aside className="w-72 shrink-0 border-r border-border bg-card flex flex-col min-h-0">
+        <aside className="w-80 shrink-0 border-r border-border bg-card flex flex-col min-h-0">
           <div className="p-3 border-b border-border space-y-3">
             <button
               onClick={createWorkflow}
@@ -1251,7 +1432,7 @@ export default function WorkflowsPage() {
               />
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto p-2">
+          <div className="min-h-24 flex-1 overflow-y-auto p-2">
             {filteredWorkflows.length === 0 ? (
               <div className="text-center py-10 text-xs text-muted-foreground">
                 No workflows found.
@@ -1312,6 +1493,167 @@ export default function WorkflowsPage() {
               })
             )}
           </div>
+          {activeWorkflow && (
+            <>
+              <details className="border-t border-border px-3 py-2">
+                <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+                  Run config
+                </summary>
+                <div className="mt-3 space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <ConfigNumber
+                      label="Iterations"
+                      min={1}
+                      value={activeWorkflow.config.iterations}
+                      onChange={(iterations) => updateConfig({ iterations })}
+                    />
+                    <ConfigNumber
+                      label="Parallel"
+                      min={1}
+                      value={activeWorkflow.config.parallel}
+                      onChange={(parallel) => updateConfig({ parallel })}
+                    />
+                    <ConfigNumber
+                      label="Ramp-up seconds"
+                      min={0}
+                      value={activeWorkflow.config.globalRampUp}
+                      onChange={(globalRampUp) => updateConfig({ globalRampUp })}
+                    />
+                    <ConfigNumber
+                      label="Timeout ms"
+                      min={1000}
+                      value={activeWorkflow.config.timeout}
+                      onChange={(timeout) => updateConfig({ timeout })}
+                    />
+                  </div>
+
+                  <div className="space-y-2 text-xs">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={activeWorkflow.config.stopOnError}
+                        onChange={(event) =>
+                          updateConfig({ stopOnError: event.target.checked })
+                        }
+                        className="accent-primary"
+                      />
+                      Stop on first error
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={activeWorkflow.config.continueOnError}
+                        onChange={(event) =>
+                          updateConfig({ continueOnError: event.target.checked })
+                        }
+                        className="accent-primary"
+                      />
+                      Continue on error
+                    </label>
+                  </div>
+
+                  <details className="rounded-md border border-border p-2">
+                    <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+                      Environment
+                    </summary>
+                    <div className="mt-2">
+                      <EnvRows
+                        env={activeWorkflow.env}
+                        onChange={(env) => updateActiveWorkflow({ env })}
+                      />
+                    </div>
+                  </details>
+                </div>
+              </details>
+
+              <div className="border-t border-border p-3 space-y-3">
+                <div className="space-y-1.5">
+                  <label className="block text-xs text-muted-foreground">
+                    Source project
+                  </label>
+                  <select
+                    value={activeWorkflow.projectId ?? ""}
+                    onChange={(event) => {
+                      updateActiveWorkflow({ projectId: event.target.value || null });
+                      setEndpointSearch("");
+                    }}
+                    className="h-9 w-full rounded-md border border-border bg-input-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="">No project</option>
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm" style={{ fontWeight: 600 }}>
+                      Add steps
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {activeProject ? activeProject.name : "No source project"}
+                    </div>
+                  </div>
+                  <button
+                    onClick={addBlankStep}
+                    className="h-8 shrink-0 rounded-md border border-border px-2 text-xs hover:bg-accent inline-flex items-center gap-1.5"
+                  >
+                    <Plus className="size-3.5" /> Blank
+                  </button>
+                </div>
+
+                {activeProject ? (
+                  <>
+                    <div className="relative">
+                      <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                      <input
+                        value={endpointSearch}
+                        onChange={(event) => setEndpointSearch(event.target.value)}
+                        placeholder="Search endpoints..."
+                        className="w-full rounded-md border border-border bg-input-background py-2 pl-8 pr-3 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </div>
+                    <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
+                      {filteredEndpoints.length === 0 ? (
+                        <div className="rounded-md border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
+                          No endpoints found.
+                        </div>
+                      ) : (
+                        filteredEndpoints.map((endpoint) => (
+                          <button
+                            key={endpoint.id}
+                            onClick={() => addEndpointStep(endpoint)}
+                            className="w-full rounded-md px-2 py-2 text-left hover:bg-muted"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`shrink-0 border rounded px-1.5 py-0.5 text-[10px] font-mono ${METHOD_COLORS[endpoint.method]}`}
+                              >
+                                {endpoint.method}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate text-xs">
+                                {endpoint.summary}
+                              </span>
+                            </div>
+                            <div className="mt-1 truncate pl-[58px] text-[10px] font-mono text-muted-foreground">
+                              {endpoint.path}
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-md border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
+                    Select a source project to add endpoints.
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </aside>
 
         <main className="flex-1 min-w-0 flex min-h-0">
@@ -1339,6 +1681,26 @@ export default function WorkflowsPage() {
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <button
+                        onClick={() => setShowMembers(true)}
+                        className="h-9 px-3 rounded-md border border-border hover:bg-accent text-sm flex items-center gap-2"
+                        title={canEditWorkflow ? "Manage workflow members" : "View workflow members"}
+                      >
+                        <UserPlus className="size-4" />
+                        <MemberAvatars
+                          ownerId={activeWorkflow.ownerId ?? user.id}
+                          memberIds={activeWorkflow.memberIds ?? []}
+                          max={3}
+                        />
+                      </button>
+                      {!canEditWorkflow && (
+                        <span
+                          className="hidden sm:inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-[10px] text-amber-500"
+                          title="Only the owner can save workflow changes"
+                        >
+                          <Lock className="size-3" /> Member
+                        </span>
+                      )}
+                      <button
                         onClick={simulateRun}
                         disabled={running || !activeWorkflow.steps.some((step) => step.enabled)}
                         className="h-9 px-3 rounded-md bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 text-sm flex items-center gap-2"
@@ -1352,7 +1714,7 @@ export default function WorkflowsPage() {
                       </button>
                       <button
                         onClick={saveWorkflow}
-                        disabled={saving}
+                        disabled={saving || !canEditWorkflow}
                         className="h-9 px-3 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 text-sm flex items-center gap-2"
                       >
                         {saving ? (
@@ -1363,142 +1725,6 @@ export default function WorkflowsPage() {
                         {dirty ? "Save changes" : "Save"}
                       </button>
                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.2fr] gap-4">
-                    <section className="rounded-xl border border-border bg-card p-4 space-y-4">
-                      <div>
-                        <div className="text-sm mb-1" style={{ fontWeight: 600 }}>
-                          Source project
-                        </div>
-                        <select
-                          value={activeWorkflow.projectId ?? ""}
-                          onChange={(event) =>
-                            updateActiveWorkflow({ projectId: event.target.value || null })
-                          }
-                          className="w-full rounded-md border border-border bg-input-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                        >
-                          <option value="">No project</option>
-                          {projects.map((project) => (
-                            <option key={project.id} value={project.id}>
-                              {project.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3">
-                        <ConfigNumber
-                          label="Iterations"
-                          min={1}
-                          value={activeWorkflow.config.iterations}
-                          onChange={(iterations) => updateConfig({ iterations })}
-                        />
-                        <ConfigNumber
-                          label="Parallel"
-                          min={1}
-                          value={activeWorkflow.config.parallel}
-                          onChange={(parallel) => updateConfig({ parallel })}
-                        />
-                        <ConfigNumber
-                          label="Ramp-up seconds"
-                          min={0}
-                          value={activeWorkflow.config.globalRampUp}
-                          onChange={(globalRampUp) => updateConfig({ globalRampUp })}
-                        />
-                        <ConfigNumber
-                          label="Timeout ms"
-                          min={1000}
-                          value={activeWorkflow.config.timeout}
-                          onChange={(timeout) => updateConfig({ timeout })}
-                        />
-                      </div>
-
-                      <div className="space-y-2 text-xs">
-                        <label className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={activeWorkflow.config.stopOnError}
-                            onChange={(event) =>
-                              updateConfig({ stopOnError: event.target.checked })
-                            }
-                            className="accent-primary"
-                          />
-                          Stop on first error
-                        </label>
-                        <label className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={activeWorkflow.config.continueOnError}
-                            onChange={(event) =>
-                              updateConfig({ continueOnError: event.target.checked })
-                            }
-                            className="accent-primary"
-                          />
-                          Continue on error and collect failures
-                        </label>
-                      </div>
-
-                      <div className="border-t border-border pt-4">
-                        <div className="text-sm mb-2" style={{ fontWeight: 600 }}>
-                          Environment
-                        </div>
-                        <EnvRows
-                          env={activeWorkflow.env}
-                          onChange={(env) => updateActiveWorkflow({ env })}
-                        />
-                      </div>
-                    </section>
-
-                    <section className="rounded-xl border border-border bg-card p-4 space-y-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <div className="text-sm" style={{ fontWeight: 600 }}>
-                            Add steps
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            Add a blank request or copy one from the selected project.
-                          </p>
-                        </div>
-                        <button
-                          onClick={addBlankStep}
-                          className="h-8 px-3 rounded-md border border-border hover:bg-accent text-xs flex items-center gap-1.5"
-                        >
-                          <Plus className="size-3.5" /> Blank step
-                        </button>
-                      </div>
-
-                      {!activeProject ? (
-                        <div className="rounded-lg border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
-                          Select a source project to add endpoints as steps.
-                        </div>
-                      ) : (
-                        <div className="max-h-80 overflow-y-auto space-y-1 pr-1">
-                          {endpoints.map((endpoint) => (
-                            <button
-                              key={endpoint.id}
-                              onClick={() => addEndpointStep(endpoint)}
-                              className="w-full flex items-center gap-2 rounded-md px-2 py-2 hover:bg-muted text-left"
-                            >
-                              <span
-                                className={`border rounded px-1.5 py-0.5 text-[10px] font-mono ${METHOD_COLORS[endpoint.method]}`}
-                              >
-                                {endpoint.method}
-                              </span>
-                              <div className="min-w-0 flex-1">
-                                <div className="truncate text-xs">{endpoint.summary}</div>
-                                <div className="truncate text-[10px] font-mono text-muted-foreground">
-                                  {endpoint.path}
-                                </div>
-                              </div>
-                              <span className="text-[10px] text-muted-foreground">
-                                {endpoint.tagName}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </section>
                   </div>
 
                   <section className="space-y-3">
@@ -1575,6 +1801,15 @@ export default function WorkflowsPage() {
           </main>
         )}
       </div>
+      {showMembers && activeWorkflow && (
+        <MemberPickerModal
+          title={`Workflow members - ${activeWorkflow.name}`}
+          ownerId={activeWorkflow.ownerId ?? user.id}
+          currentMemberIds={activeWorkflow.memberIds ?? []}
+          onClose={() => setShowMembers(false)}
+          onSave={saveWorkflowMembers}
+        />
+      )}
     </div>
   );
 }

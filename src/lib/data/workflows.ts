@@ -22,14 +22,35 @@ type WorkflowRow = {
   updated_at: string | null;
 };
 
-function fromRow(row: WorkflowRow): Workflow {
+type WorkflowMemberRow = {
+  workflow_id: string;
+  user_id: string;
+};
+
+const DEFAULT_STEP_EXECUTION = {
+  iterations: 1,
+  rampUpDuration: 0,
+  delay: 500,
+  timeout: 30000,
+  retryCount: 0,
+};
+
+function normalizeStep(step: WorkflowStep): WorkflowStep {
+  return {
+    ...step,
+    execution: { ...DEFAULT_STEP_EXECUTION, ...(step.execution ?? {}) },
+  };
+}
+
+function fromRow(row: WorkflowRow, memberIds: string[] = []): Workflow {
   return {
     id: row.id,
     projectId: row.project_id,
     ownerId: row.owner_id,
+    memberIds,
     name: row.name,
     description: row.description ?? "",
-    steps: Array.isArray(row.steps) ? row.steps : [],
+    steps: Array.isArray(row.steps) ? row.steps.map(normalizeStep) : [],
     config: { ...DEFAULT_WORKFLOW_CONFIG, ...(row.config ?? {}) },
     env: row.env ?? {},
     createdAt: row.created_at,
@@ -60,7 +81,26 @@ export async function loadWorkflows(): Promise<Workflow[]> {
     .order("updated_at", { ascending: false });
 
   if (error) throw toError(error, "Could not load workflows.");
-  return ((data ?? []) as WorkflowRow[]).map(fromRow);
+  const rows = (data ?? []) as WorkflowRow[];
+  if (!rows.length) return [];
+
+  const { data: memberRows, error: memberError } = await supabase
+    .from("workflow_members")
+    .select("workflow_id,user_id")
+    .in(
+      "workflow_id",
+      rows.map((row) => row.id)
+    );
+
+  if (memberError) throw toError(memberError, "Could not load workflow members.");
+  const membersByWorkflow = new Map<string, string[]>();
+  ((memberRows ?? []) as WorkflowMemberRow[]).forEach((row) => {
+    const ids = membersByWorkflow.get(row.workflow_id) ?? [];
+    ids.push(row.user_id);
+    membersByWorkflow.set(row.workflow_id, ids);
+  });
+
+  return rows.map((row) => fromRow(row, membersByWorkflow.get(row.id) ?? []));
 }
 
 export async function upsertWorkflow(workflow: Workflow, ownerId: string) {
@@ -73,7 +113,7 @@ export async function upsertWorkflow(workflow: Workflow, ownerId: string) {
     .single();
 
   if (error) throw toError(error, "Could not save the workflow.");
-  return fromRow(data as WorkflowRow);
+  return fromRow(data as WorkflowRow, workflow.memberIds ?? []);
 }
 
 export async function deleteWorkflow(workflowId: string, ownerId: string) {
@@ -85,4 +125,25 @@ export async function deleteWorkflow(workflowId: string, ownerId: string) {
     .eq("owner_id", ownerId);
 
   if (error) throw toError(error, "Could not delete the workflow.");
+}
+
+export async function updateWorkflowMembers(workflowId: string, memberIds: string[]) {
+  const supabase = getSupabaseClient();
+  const normalizedIds = Array.from(new Set(memberIds.filter(Boolean)));
+  const { error: deleteError } = await supabase
+    .from("workflow_members")
+    .delete()
+    .eq("workflow_id", workflowId);
+
+  if (deleteError) throw toError(deleteError, "Could not update workflow members.");
+  if (!normalizedIds.length) return;
+
+  const { error: insertError } = await supabase.from("workflow_members").insert(
+    normalizedIds.map((userId) => ({
+      workflow_id: workflowId,
+      user_id: userId,
+    }))
+  );
+
+  if (insertError) throw toError(insertError, "Could not update workflow members.");
 }

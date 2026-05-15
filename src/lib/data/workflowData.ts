@@ -90,6 +90,7 @@ export interface Workflow {
   id: string;
   projectId?: string | null;
   ownerId?: string;
+  memberIds?: string[];
   name: string;
   description: string;
   steps: WorkflowStep[];
@@ -172,6 +173,7 @@ export function makeBlankWorkflow(ownerId: string, projectId?: string | null): W
   return {
     id: uid("wf"),
     ownerId,
+    memberIds: [],
     projectId: projectId ?? null,
     name: "New Workflow",
     description: "",
