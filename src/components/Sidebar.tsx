@@ -24,7 +24,7 @@ interface Props {
   query: string;
   onQueryChange: (v: string) => void;
   onExport: () => void;
-  onOpenSource: () => void;
+  onOpenSource?: () => void;
   onToggleEditor?: () => void;
   editorOpen?: boolean;
   onBackToProjects?: () => void;
@@ -115,13 +115,15 @@ export function Sidebar({
               <Code2 className="size-4" />
             </button>
           )}
-          <button
-            onClick={onOpenSource}
-            className="size-8 rounded-md border border-border hover:bg-accent transition-colors flex items-center justify-center text-muted-foreground hover:text-foreground"
-            aria-label="Source"
-          >
-            <Settings className="size-4" />
-          </button>
+          {onOpenSource && (
+            <button
+              onClick={onOpenSource}
+              className="size-8 rounded-md border border-border hover:bg-accent transition-colors flex items-center justify-center text-muted-foreground hover:text-foreground"
+              aria-label="Source"
+            >
+              <Settings className="size-4" />
+            </button>
+          )}
         </div>
       </div>
 

@@ -10,6 +10,8 @@ import type {
 
 const METHODS: HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
+type UnknownRecord = Record<string, unknown>;
+
 type OpenApiServer = {
   url?: unknown;
   description?: unknown;
@@ -20,116 +22,156 @@ type ResolvedServer = {
   description?: string;
 };
 
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asRecord(value: unknown): UnknownRecord {
+  return isRecord(value) ? value : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asString(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
 function hasServerUrl(server: OpenApiServer): server is OpenApiServer & { url: string } {
   return typeof server.url === "string";
 }
 
-function resolveRef(root: any, ref: string): any {
+function resolveRef(root: unknown, ref: string): unknown {
   if (!ref.startsWith("#/")) return {};
   const parts = ref.slice(2).split("/");
-  let node = root;
-  for (const p of parts) {
-    if (node == null) return {};
-    node = node[p];
+  let node: unknown = root;
+  for (const part of parts) {
+    if (!isRecord(node)) return {};
+    node = node[part];
   }
   return node ?? {};
 }
 
-function deref(root: any, node: any, seen = new Set<string>()): any {
-  if (!node || typeof node !== "object") return node;
-  if (node.$ref && typeof node.$ref === "string") {
-    if (seen.has(node.$ref)) return {};
-    seen.add(node.$ref);
-    return deref(root, resolveRef(root, node.$ref), seen);
+function deref(root: unknown, node: unknown, seen = new Set<string>()): unknown {
+  if (!isRecord(node)) return node;
+  const ref = node.$ref;
+  if (typeof ref === "string") {
+    if (seen.has(ref)) return {};
+    seen.add(ref);
+    return deref(root, resolveRef(root, ref), seen);
   }
   return node;
 }
 
-function exampleFromSchema(root: any, schema: any, depth = 0): any {
-  if (!schema || depth > 6) return null;
-  schema = deref(root, schema);
+function exampleFromSchema(root: unknown, inputSchema: unknown, depth = 0): unknown {
+  if (!inputSchema || depth > 6) return null;
+  const schema = asRecord(deref(root, inputSchema));
   if (schema.example !== undefined) return schema.example;
   if (schema.default !== undefined) return schema.default;
-  if (schema.enum && schema.enum.length) return schema.enum[0];
-  const t = schema.type;
-  if (t === "object" || schema.properties) {
-    const out: any = {};
-    const props = schema.properties || {};
-    for (const k of Object.keys(props)) {
-      out[k] = exampleFromSchema(root, props[k], depth + 1);
+
+  const enumValues = asArray(schema.enum);
+  if (enumValues.length) return enumValues[0];
+
+  const type = asString(schema.type);
+  const properties = asRecord(schema.properties);
+  if (type === "object" || Object.keys(properties).length) {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(properties)) {
+      out[key] = exampleFromSchema(root, properties[key], depth + 1);
     }
     return out;
   }
-  if (t === "array")
+
+  if (type === "array") {
     return [exampleFromSchema(root, schema.items, depth + 1)].filter(
-      (v) => v !== null
+      (value) => value !== null
     );
-  if (t === "integer" || t === "number") return 0;
-  if (t === "boolean") return false;
-  if (t === "string") {
-    if (schema.format === "date-time") return new Date().toISOString();
-    if (schema.format === "date") return "2026-01-01";
-    if (schema.format === "email") return "user@example.com";
-    if (schema.format === "uuid") return "00000000-0000-0000-0000-000000000000";
+  }
+  if (type === "integer" || type === "number") return 0;
+  if (type === "boolean") return false;
+  if (type === "string") {
+    const format = asString(schema.format);
+    if (format === "date-time") return new Date().toISOString();
+    if (format === "date") return "2026-01-01";
+    if (format === "email") return "user@example.com";
+    if (format === "uuid") return "00000000-0000-0000-0000-000000000000";
     return "string";
   }
   return null;
 }
 
-function schemaTypeString(root: any, schema: any): string {
-  if (!schema) return "any";
-  schema = deref(root, schema);
-  if (schema.type === "array") return `${schemaTypeString(root, schema.items)}[]`;
-  if (schema.type) return schema.type;
-  if (schema.properties) return "object";
+function schemaTypeString(root: unknown, inputSchema: unknown): string {
+  if (!inputSchema) return "any";
+  const schema = asRecord(deref(root, inputSchema));
+  const type = asString(schema.type);
+  if (type === "array") return `${schemaTypeString(root, schema.items)}[]`;
+  if (type) return type;
+  if (Object.keys(asRecord(schema.properties)).length) return "object";
   return "any";
 }
 
-function flattenBodyFields(root: any, schema: any): BodyField[] {
-  if (!schema) return [];
-  schema = deref(root, schema);
-  const props = schema.properties || {};
-  const required: string[] = schema.required || [];
-  return Object.keys(props).map((name) => {
-    const p = deref(root, props[name]);
+function flattenBodyFields(root: unknown, inputSchema: unknown): BodyField[] {
+  if (!inputSchema) return [];
+  const schema = asRecord(deref(root, inputSchema));
+  const properties = asRecord(schema.properties);
+  const required = asArray(schema.required).filter((value): value is string => typeof value === "string");
+
+  return Object.keys(properties).map((name) => {
+    const property = asRecord(deref(root, properties[name]));
     return {
       name,
-      type: schemaTypeString(root, p),
+      type: schemaTypeString(root, property),
       required: required.includes(name),
-      description: p.description || "",
-      example: p.example ?? exampleFromSchema(root, p),
+      description: asString(property.description),
+      example: property.example ?? exampleFromSchema(root, property),
     };
   });
 }
 
-export function convertOpenApi(doc: any): ApiSpec {
-  const info = doc.info || {};
+function paramLocation(value: unknown): Param["in"] | null {
+  return value === "path" || value === "query" || value === "header" ? value : null;
+}
+
+export function convertOpenApi(input: unknown): ApiSpec {
+  const doc = asRecord(input);
+  const info = asRecord(doc.info);
+  const rawServers = asArray(doc.servers);
+  const host = asString(doc.host);
+  const schemes = asArray(doc.schemes);
+  const firstScheme = typeof schemes[0] === "string" ? schemes[0] : "https";
+  const basePath = asString(doc.basePath);
   const servers =
-    Array.isArray(doc.servers) && doc.servers.length
-      ? (doc.servers as OpenApiServer[])
+    rawServers.length
+      ? rawServers
+          .map((server) => asRecord(server) as OpenApiServer)
           .filter(hasServerUrl)
           .map((server) => ({
             url: server.url,
             description:
               typeof server.description === "string" ? server.description : undefined,
           }) satisfies ResolvedServer)
-      : doc.host
+      : host
         ? [
             {
-              url: `${doc.schemes?.[0] || "https"}://${doc.host}${doc.basePath || ""}`,
+              url: `${firstScheme}://${host}${basePath}`,
             },
           ]
         : [];
   const baseUrl = servers[0]?.url ?? "";
 
   const tagMap = new Map<string, Tag>();
-  for (const t of doc.tags || []) {
-    tagMap.set(t.name, {
-      name: t.name,
-      description: t.description || "",
+  for (const rawTag of asArray(doc.tags)) {
+    const tag = asRecord(rawTag);
+    const name = asString(tag.name);
+    if (!name) continue;
+    tagMap.set(name, {
+      name,
+      description: asString(tag.description),
       endpoints: [],
     });
   }
+
   const getTag = (name: string): Tag => {
     if (!tagMap.has(name)) {
       tagMap.set(name, { name, description: "", endpoints: [] });
@@ -137,78 +179,91 @@ export function convertOpenApi(doc: any): ApiSpec {
     return tagMap.get(name)!;
   };
 
-  const paths = doc.paths || {};
+  const paths = asRecord(doc.paths);
   for (const path of Object.keys(paths)) {
-    const pathItem = paths[path] || {};
-    const pathParams = pathItem.parameters || [];
-    for (const m of METHODS) {
-      const op = pathItem[m.toLowerCase()];
-      if (!op) continue;
+    const pathItem = asRecord(paths[path]);
+    const pathParams = asArray(pathItem.parameters);
+    for (const method of METHODS) {
+      const operation = pathItem[method.toLowerCase()];
+      if (!isRecord(operation)) continue;
 
-      const tagName = (op.tags && op.tags[0]) || "Default";
+      const operationTags = asArray(operation.tags);
+      const tagName = typeof operationTags[0] === "string" ? operationTags[0] : "Default";
       const tag = getTag(tagName);
 
-      const allParams: any[] = [...pathParams, ...(op.parameters || [])].map((p) =>
-        deref(doc, p)
+      const allParams = [...pathParams, ...asArray(operation.parameters)].map((param) =>
+        asRecord(deref(doc, param))
       );
       const headers: Param[] = [];
       const params: Param[] = [];
-      for (const p of allParams) {
+
+      for (const param of allParams) {
+        const name = asString(param.name);
+        const location = paramLocation(param.in);
+        if (!name || !location) continue;
+        const schema = isRecord(param.schema) ? param.schema : { type: param.type };
+        const rawExample =
+          param.example ?? (param.schema ? exampleFromSchema(doc, param.schema) : undefined);
         const entry: Param = {
-          name: p.name,
-          in: p.in,
-          type: schemaTypeString(doc, p.schema || { type: p.type }),
-          required: p.required,
-          description: p.description || "",
-          example: p.example ?? (p.schema ? exampleFromSchema(doc, p.schema) : undefined),
+          name,
+          in: location,
+          type: schemaTypeString(doc, schema),
+          required: typeof param.required === "boolean" ? param.required : undefined,
+          description: asString(param.description),
+          example: rawExample === undefined ? undefined : String(rawExample),
         };
-        if (p.in === "header") headers.push(entry);
-        else if (p.in === "path" || p.in === "query") params.push(entry);
+        if (location === "header") headers.push(entry);
+        else params.push(entry);
       }
 
       let body: Endpoint["body"];
       let bodies: Endpoint["bodies"];
-      const rb = deref(doc, op.requestBody);
-      if (rb && rb.content) {
-        bodies = Object.keys(rb.content).map((ct) => {
-          const media = rb.content[ct] || {};
+      const requestBody = asRecord(deref(doc, operation.requestBody));
+      const requestContent = asRecord(requestBody.content);
+      if (Object.keys(requestContent).length) {
+        bodies = Object.keys(requestContent).map((contentType) => {
+          const media = asRecord(requestContent[contentType]);
           const schema = deref(doc, media.schema);
+          const schemaRecord = asRecord(schema);
           return {
-            contentType: ct,
+            contentType,
             fields: flattenBodyFields(doc, schema),
             example: media.example ?? exampleFromSchema(doc, schema) ?? {},
             schemaType: schemaTypeString(doc, schema),
-            description: schema.description || rb.description || "",
+            description:
+              asString(schemaRecord.description) || asString(requestBody.description),
           };
         });
         body = bodies[0];
       }
 
       const responses: ResponseSpec[] = [];
-      const respMap = op.responses || {};
-      for (const code of Object.keys(respMap)) {
-        const r = deref(doc, respMap[code]);
-        const ct = r.content ? Object.keys(r.content)[0] : null;
-        const media = ct ? r.content[ct] : null;
-        const ex = media ? media.example ?? exampleFromSchema(doc, media.schema) : null;
+      const responseMap = asRecord(operation.responses);
+      for (const code of Object.keys(responseMap)) {
+        const response = asRecord(deref(doc, responseMap[code]));
+        const content = asRecord(response.content);
+        const contentType = Object.keys(content)[0];
+        const media = contentType ? asRecord(content[contentType]) : {};
+        const example = media.example ?? exampleFromSchema(doc, media.schema);
         const status = parseInt(code, 10);
         if (!Number.isFinite(status)) continue;
         responses.push({
           status,
-          description: r.description || "",
-          example: ex ?? {},
+          description: asString(response.description),
+          example: example ?? {},
         });
       }
 
+      const operationId = asString(operation.operationId);
       const id =
-        op.operationId || `${m.toLowerCase()}-${path.replace(/[^a-z0-9]+/gi, "-")}`;
+        operationId || `${method.toLowerCase()}-${path.replace(/[^a-z0-9]+/gi, "-")}`;
 
       tag.endpoints.push({
         id,
-        method: m,
+        method,
         path,
-        summary: op.summary || path,
-        description: op.description || "",
+        summary: asString(operation.summary, path),
+        description: asString(operation.description),
         headers: headers.length ? headers : undefined,
         params: params.length ? params : undefined,
         body,
@@ -222,12 +277,12 @@ export function convertOpenApi(doc: any): ApiSpec {
 
   return {
     info: {
-      title: info.title || "Untitled API",
-      version: info.version || "1.0.0",
-      description: info.description || "",
+      title: asString(info.title, "Untitled API"),
+      version: asString(info.version, "1.0.0"),
+      description: asString(info.description),
       baseUrl,
       servers,
     },
-    tags: Array.from(tagMap.values()).filter((t) => t.endpoints.length > 0),
+    tags: Array.from(tagMap.values()).filter((tag) => tag.endpoints.length > 0),
   };
 }

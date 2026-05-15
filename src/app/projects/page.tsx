@@ -80,12 +80,6 @@ function ProjectDocsContent() {
     }
   }, [initialized, projectId, projects.length, activeProject, router]);
 
-  useEffect(() => {
-    if (allEndpoints.length && !allEndpoints.find((e) => e.id === activeId)) {
-      setActiveId(allEndpoints[0].id);
-    }
-  }, [allEndpoints, activeId]);
-
   const activeBaseUrl =
     selectedBaseUrl && baseUrls.includes(selectedBaseUrl)
       ? selectedBaseUrl
@@ -96,7 +90,11 @@ function ProjectDocsContent() {
       <div className="min-h-screen bg-background p-6 text-destructive">{error}</div>
     ) : null;
   }
-  const active = allEndpoints.find((e) => e.id === activeId) ?? allEndpoints[0];
+  const effectiveActiveId = allEndpoints.some((e) => e.id === activeId)
+    ? activeId
+    : allEndpoints[0]?.id ?? "";
+  const active = allEndpoints.find((e) => e.id === effectiveActiveId) ?? allEndpoints[0];
+  const canEditProject = (activeProject.ownerId ?? user?.id) === user?.id;
   const updateProjectSpec = async (
     spec: ApiSpec,
     sourceName: string,
@@ -105,6 +103,7 @@ function ProjectDocsContent() {
     preserveRaw = true
   ) => {
     if (!user) throw new Error("Missing authenticated user.");
+    if (!canEditProject) throw new Error("Only the project owner can update the OpenAPI source.");
     const updated: Project = {
       ...activeProject,
       spec,
@@ -125,13 +124,13 @@ function ProjectDocsContent() {
       <Sidebar
         spec={activeProject.spec}
         projectName={activeProject.name}
-        activeId={active?.id ?? ""}
+        activeId={active?.id ?? effectiveActiveId}
         onSelect={setActiveId}
         query={query}
         onQueryChange={setQuery}
         onExport={() => setShowExport(true)}
-        onOpenSource={() => setShowSource(true)}
-        onToggleEditor={() => setShowEditor((open) => !open)}
+        onOpenSource={canEditProject ? () => setShowSource(true) : undefined}
+        onToggleEditor={canEditProject ? () => setShowEditor((open) => !open) : undefined}
         editorOpen={showEditor}
         onBackToProjects={() => router.push("/")}
         selectedBaseUrl={activeBaseUrl}
@@ -162,7 +161,7 @@ function ProjectDocsContent() {
           onClose={() => setShowExport(false)}
         />
       )}
-      {showEditor && (
+      {showEditor && canEditProject && (
         <SpecEditor
           key={activeProject.id}
           initialText={editorInitialText}
@@ -173,7 +172,7 @@ function ProjectDocsContent() {
           }
         />
       )}
-      {showSource && (
+      {showSource && canEditProject && (
         <SourceModal
           currentSourceName={activeProject.sourceName}
           onClose={() => setShowSource(false)}
