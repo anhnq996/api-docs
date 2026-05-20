@@ -132,7 +132,7 @@ export default function LoginPage() {
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
               {mode === "login"
-                ? "Use your Supabase account."
+                ? "Sign in to access this feature."
                 : "Register a new account for project access."}
             </p>
           </div>

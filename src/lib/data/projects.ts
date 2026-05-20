@@ -136,6 +136,14 @@ export async function upsertProject(project: Project, ownerId: string) {
 
 export async function deleteProject(projectId: string, ownerId: string) {
   const supabase = getSupabaseClient();
+  const { error: detachError } = await supabase
+    .from("api_workflows")
+    .update({ project_id: null })
+    .eq("project_id", projectId)
+    .eq("owner_id", ownerId);
+
+  if (detachError) throw toError(detachError, "Could not detach workflows from the project.");
+
   const { error } = await supabase
     .from("api_projects")
     .delete()
