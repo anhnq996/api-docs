@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useMemo, useState, type CSSProperties } from "react";
 import {
   BarChart3,
   CheckCircle2,
@@ -14,6 +14,8 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import type {
   CallRecord,
   Workflow,
@@ -38,7 +40,24 @@ const METHOD_COLORS: Record<string, string> = {
   DELETE: "text-red-500 bg-red-500/10",
 };
 
+const callHistoryCodeStyle: { [key: string]: CSSProperties } = {
+  ...oneDark,
+  'pre[class*="language-"]': {
+    ...(oneDark['pre[class*="language-"]'] as CSSProperties),
+    background: "#0d1117",
+    margin: 0,
+    padding: "0.75rem",
+    fontSize: "0.75rem",
+    lineHeight: "1.6",
+  },
+  'code[class*="language-"]': {
+    ...(oneDark['code[class*="language-"]'] as CSSProperties),
+    background: "transparent",
+  },
+};
+
 function statusColor(code: number) {
+  if (code <= 0) return "text-red-500";
   if (code < 300) return "text-emerald-500";
   if (code < 400) return "text-amber-500";
   if (code < 500) return "text-orange-500";
@@ -75,6 +94,189 @@ function StatCard({
     <div className="rounded-lg border border-border bg-card p-4">
       <div className={`text-2xl font-mono ${tone}`}>{value}</div>
       <div className="mt-0.5 text-xs text-muted-foreground">{label}</div>
+    </div>
+  );
+}
+
+function RatioBar({ passed, failed }: { passed: number; failed: number }) {
+  const total = Math.max(1, passed + failed);
+  return (
+    <div className="h-3 overflow-hidden rounded-full bg-muted">
+      <div className="flex h-full">
+        <div
+          className="bg-emerald-500"
+          style={{ width: `${Math.round((passed / total) * 100)}%` }}
+        />
+        <div
+          className="bg-red-500"
+          style={{ width: `${Math.round((failed / total) * 100)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function StatusDistributionChart({
+  counts,
+}: {
+  counts: Record<WorkflowRunStatus, number>;
+}) {
+  const items: { status: WorkflowRunStatus; label: string; bar: string }[] = [
+    { status: "passed", label: "Passed", bar: "bg-emerald-500" },
+    { status: "failed", label: "Failed", bar: "bg-red-500" },
+    { status: "cancelled", label: "Cancelled", bar: "bg-muted-foreground" },
+  ];
+  const max = Math.max(1, ...items.map((item) => counts[item.status]));
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="text-sm" style={{ fontWeight: 600 }}>
+          Run status
+        </div>
+        <BarChart3 className="size-4 text-muted-foreground" />
+      </div>
+      <div className="space-y-3">
+        {items.map((item) => (
+          <div key={item.status} className="grid grid-cols-[72px_1fr_34px] items-center gap-3 text-xs">
+            <span className="text-muted-foreground">{item.label}</span>
+            <div className="h-2 overflow-hidden rounded-full bg-muted">
+              <div
+                className={`h-full rounded-full ${item.bar}`}
+                style={{ width: `${Math.max(4, Math.round((counts[item.status] / max) * 100))}%` }}
+              />
+            </div>
+            <span className="text-right font-mono">{counts[item.status]}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WorkflowLatencyChart({
+  items,
+}: {
+  items: { id: string; name: string; avgResponseTime: number }[];
+}) {
+  const max = Math.max(1, ...items.map((item) => item.avgResponseTime));
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="text-sm" style={{ fontWeight: 600 }}>
+          Slowest workflows
+        </div>
+        <span className="text-[10px] text-muted-foreground">avg RT</span>
+      </div>
+      {items.length ? (
+        <div className="space-y-3">
+          {items.map((item) => (
+            <div key={item.id} className="grid grid-cols-[120px_1fr_58px] items-center gap-3 text-xs">
+              <span className="truncate text-muted-foreground">{item.name}</span>
+              <div className="h-2 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-amber-500"
+                  style={{ width: `${Math.max(4, Math.round((item.avgResponseTime / max) * 100))}%` }}
+                />
+              </div>
+              <span className="text-right font-mono">{item.avgResponseTime}ms</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="py-6 text-center text-xs text-muted-foreground">No workflow latency data.</div>
+      )}
+    </div>
+  );
+}
+
+function WorkflowOutcomeList({
+  title,
+  items,
+  tone,
+  empty,
+}: {
+  title: string;
+  items: {
+    id: string;
+    name: string;
+    runs: number;
+    passedRuns: number;
+    failedRuns: number;
+    failedRequests: number;
+  }[];
+  tone: "success" | "failed";
+  empty: string;
+}) {
+  const Icon = tone === "success" ? CheckCircle2 : XCircle;
+  const iconClass = tone === "success" ? "text-emerald-500" : "text-red-500";
+
+  return (
+    <div className="rounded-lg border border-border bg-card">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3 text-xs">
+        <Icon className={`size-3.5 ${iconClass}`} />
+        <span style={{ fontWeight: 600 }}>{title}</span>
+        <span className="ml-auto font-mono text-muted-foreground">{items.length}</span>
+      </div>
+      <div className="max-h-56 overflow-y-auto p-2">
+        {items.length ? (
+          items.map((item) => (
+            <div key={item.id} className="rounded-md px-2 py-2 text-xs hover:bg-muted/40">
+              <div className="truncate" style={{ fontWeight: 600 }}>
+                {item.name}
+              </div>
+              <div className="mt-0.5 text-[10px] text-muted-foreground">
+                {item.runs} run{item.runs === 1 ? "" : "s"} / {item.passedRuns} passed /{" "}
+                {item.failedRuns} failed / {item.failedRequests} failed requests
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="p-6 text-center text-xs text-muted-foreground">{empty}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatJsonBody(body: string) {
+  if (!body.trim()) return { text: "(empty)", language: "text" };
+  try {
+    return {
+      text: JSON.stringify(JSON.parse(body), null, 2),
+      language: "json",
+    };
+  } catch {
+    return {
+      text: body,
+      language: "text",
+    };
+  }
+}
+
+function CodePreview({
+  value,
+  preferJson = false,
+}: {
+  value: string;
+  preferJson?: boolean;
+}) {
+  const formatted = useMemo(
+    () => (preferJson ? formatJsonBody(value) : { text: value || "(empty)", language: "text" }),
+    [preferJson, value]
+  );
+
+  return (
+    <div className="max-h-64 overflow-auto rounded-md border border-border bg-[#0d1117]">
+      <SyntaxHighlighter
+        language={formatted.language}
+        style={callHistoryCodeStyle}
+        customStyle={{ margin: 0, background: "#0d1117" }}
+        wrapLongLines
+      >
+        {formatted.text}
+      </SyntaxHighlighter>
     </div>
   );
 }
@@ -237,11 +439,36 @@ export function MultiWorkflowRunner({
   );
 }
 
-function RunReportPanel({ results }: { results: WorkflowRunResult[] }) {
-  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
+function RunReportPanel({
+  results,
+  workflows,
+}: {
+  results: WorkflowRunResult[];
+  workflows: Workflow[];
+}) {
+  const [filterWorkflow, setFilterWorkflow] = useState("");
+  const [filterStatus, setFilterStatus] = useState<"" | WorkflowRunStatus>("");
+
+  const workflowOptions = useMemo(() => {
+    const options = new Map<string, string>();
+    workflows.forEach((workflow) => options.set(workflow.id, workflow.name));
+    results.forEach((result) => options.set(result.workflowId, result.workflowName));
+    return Array.from(options.entries());
+  }, [results, workflows]);
+
+  const filteredResults = useMemo(
+    () =>
+      results.filter((result) => {
+        if (filterWorkflow && result.workflowId !== filterWorkflow) return false;
+        if (filterStatus && result.status !== filterStatus) return false;
+        return true;
+      }),
+    [filterStatus, filterWorkflow, results]
+  );
+
   const totals = useMemo(
     () =>
-      results.reduce(
+      filteredResults.reduce(
         (acc, result) => ({
           total: acc.total + result.summary.total,
           passed: acc.passed + result.summary.passed,
@@ -250,21 +477,73 @@ function RunReportPanel({ results }: { results: WorkflowRunResult[] }) {
         }),
         { total: 0, passed: 0, failed: 0, responseTime: 0 }
       ),
-    [results]
+    [filteredResults]
   );
-  const avgResponseTime = results.length
-    ? Math.round(totals.responseTime / results.length)
+  const avgResponseTime = filteredResults.length
+    ? Math.round(totals.responseTime / filteredResults.length)
     : 0;
   const errorRate = totals.total ? Math.round((totals.failed / totals.total) * 1000) / 10 : 0;
+  const statusCounts = useMemo(
+    () =>
+      filteredResults.reduce<Record<WorkflowRunStatus, number>>(
+        (acc, result) => {
+          acc[result.status] += 1;
+          return acc;
+        },
+        { idle: 0, queued: 0, running: 0, passed: 0, failed: 0, cancelled: 0 }
+      ),
+    [filteredResults]
+  );
 
-  const toggleRun = (id: string) => {
-    setExpandedRuns((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+  const workflowStats = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        runs: number;
+        passedRuns: number;
+        failedRuns: number;
+        totalRequests: number;
+        failedRequests: number;
+        avgResponseTime: number;
+      }
+    >();
+
+    filteredResults.forEach((result) => {
+      const current =
+        map.get(result.workflowId) ??
+        {
+          id: result.workflowId,
+          name: result.workflowName,
+          runs: 0,
+          passedRuns: 0,
+          failedRuns: 0,
+          totalRequests: 0,
+          failedRequests: 0,
+          avgResponseTime: 0,
+        };
+      const runFailed = result.status !== "passed" || result.summary.failed > 0;
+      current.runs += 1;
+      current.passedRuns += runFailed ? 0 : 1;
+      current.failedRuns += runFailed ? 1 : 0;
+      current.totalRequests += result.summary.total;
+      current.failedRequests += result.summary.failed;
+      current.avgResponseTime += result.summary.avgResponseTime;
+      map.set(result.workflowId, current);
     });
-  };
+
+    return Array.from(map.values()).map((item) => ({
+      ...item,
+      avgResponseTime: item.runs ? Math.round(item.avgResponseTime / item.runs) : 0,
+    }));
+  }, [filteredResults]);
+
+  const successWorkflows = workflowStats.filter((item) => item.runs > 0 && item.failedRuns === 0);
+  const failedWorkflows = workflowStats.filter((item) => item.failedRuns > 0);
+  const slowestWorkflows = [...workflowStats]
+    .sort((a, b) => b.avgResponseTime - a.avgResponseTime)
+    .slice(0, 6);
 
   if (!results.length) {
     return (
@@ -279,6 +558,46 @@ function RunReportPanel({ results }: { results: WorkflowRunResult[] }) {
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="mx-auto max-w-5xl space-y-6">
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-4 py-3">
+          <Filter className="size-3.5 text-muted-foreground" />
+          <select
+            value={filterWorkflow}
+            onChange={(event) => setFilterWorkflow(event.target.value)}
+            className="rounded-md border border-border bg-input-background px-2 py-1 text-xs"
+          >
+            <option value="">All workflows</option>
+            {workflowOptions.map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={filterStatus}
+            onChange={(event) => setFilterStatus(event.target.value as "" | WorkflowRunStatus)}
+            className="rounded-md border border-border bg-input-background px-2 py-1 text-xs"
+          >
+            <option value="">All run statuses</option>
+            <option value="passed">Passed</option>
+            <option value="failed">Failed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+          {(filterWorkflow || filterStatus) && (
+            <button
+              onClick={() => {
+                setFilterWorkflow("");
+                setFilterStatus("");
+              }}
+              className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              Clear filters
+            </button>
+          )}
+          <span className="ml-auto text-[10px] text-muted-foreground">
+            {filteredResults.length} of {results.length} report{results.length === 1 ? "" : "s"}
+          </span>
+        </div>
+
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <StatCard label="Total requests" value={totals.total} />
           <StatCard label="Passed" value={totals.passed} tone="text-emerald-500" />
@@ -288,7 +607,39 @@ function RunReportPanel({ results }: { results: WorkflowRunResult[] }) {
 
         <div className="grid grid-cols-2 gap-3">
           <StatCard label="Avg response time" value={`${avgResponseTime}ms`} />
-          <StatCard label="Workflow runs" value={results.length} />
+          <StatCard label="Workflow runs" value={filteredResults.length} />
+        </div>
+
+        <div className="rounded-lg border border-border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="text-sm" style={{ fontWeight: 600 }}>
+              Request outcome
+            </div>
+            <span className="text-[10px] text-muted-foreground">
+              {totals.passed} passed / {totals.failed} failed
+            </span>
+          </div>
+          <RatioBar passed={totals.passed} failed={totals.failed} />
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          <StatusDistributionChart counts={statusCounts} />
+          <WorkflowLatencyChart items={slowestWorkflows} />
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          <WorkflowOutcomeList
+            title="All-success workflows"
+            items={successWorkflows}
+            tone="success"
+            empty="No workflow has only successful runs in the current filter."
+          />
+          <WorkflowOutcomeList
+            title="Failed workflows"
+            items={failedWorkflows}
+            tone="failed"
+            empty="No failed workflows in the current filter."
+          />
         </div>
 
         <div className="rounded-lg border border-border bg-card">
@@ -296,10 +647,9 @@ function RunReportPanel({ results }: { results: WorkflowRunResult[] }) {
             Run reports
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px]">
+            <table className="w-full min-w-[780px]">
               <thead>
                 <tr className="border-b border-border text-[10px] text-muted-foreground">
-                  <th className="w-8" />
                   <th className="px-3 py-2 text-left">Workflow</th>
                   <th className="px-3 py-2 text-center">Status</th>
                   <th className="px-3 py-2 text-right">Total</th>
@@ -310,75 +660,32 @@ function RunReportPanel({ results }: { results: WorkflowRunResult[] }) {
                 </tr>
               </thead>
               <tbody>
-                {results.map((result) => {
-                  const isExpanded = expandedRuns.has(result.id);
+                {filteredResults.map((result) => {
                   return (
-                    <Fragment key={result.id}>
-                      <tr
-                        onClick={() => toggleRun(result.id)}
-                        className="cursor-pointer border-b border-border text-xs hover:bg-muted/30"
-                      >
-                        <td className="px-2 py-2.5 text-muted-foreground">
-                          {isExpanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-                        </td>
-                        <td className="max-w-[240px] px-3 py-2.5">
-                          <span className="block truncate">{result.workflowName}</span>
-                        </td>
-                        <td className="px-3 py-2.5 text-center">
-                          <StatusPill status={result.status} />
-                        </td>
-                        <td className="px-3 py-2.5 text-right">{result.summary.total}</td>
-                        <td className="px-3 py-2.5 text-right text-emerald-500">{result.summary.passed}</td>
-                        <td className="px-3 py-2.5 text-right text-red-500">{result.summary.failed}</td>
-                        <td className="px-3 py-2.5 text-right">{result.summary.avgResponseTime}ms</td>
-                        <td className="whitespace-nowrap px-3 py-2.5 text-right text-muted-foreground">
-                          {new Date(result.startedAt).toLocaleString()}
-                        </td>
-                      </tr>
-                      {isExpanded && (
-                        <tr className="border-b border-border">
-                          <td colSpan={8} className="bg-muted/20 p-0">
-                            <div className="space-y-2 p-4">
-                              {result.stepResults.map((step) => (
-                                <div key={step.stepId} className="rounded-md border border-border bg-background p-3">
-                                  <div className="mb-2 flex items-center gap-2">
-                                    {step.status === "passed" ? (
-                                      <CheckCircle2 className="size-4 text-emerald-500" />
-                                    ) : (
-                                      <XCircle className="size-4 text-red-500" />
-                                    )}
-                                    <span className="text-sm" style={{ fontWeight: 600 }}>
-                                      {step.stepName}
-                                    </span>
-                                  </div>
-                                  {step.calls.map((call) => (
-                                    <div
-                                      key={call.id}
-                                      className="grid grid-cols-[70px_1fr_70px_80px] gap-2 text-[10px] text-muted-foreground"
-                                    >
-                                      <span className={`rounded px-1.5 py-0.5 font-mono ${METHOD_COLORS[call.method]}`}>
-                                        {call.method}
-                                      </span>
-                                      <span className="truncate font-mono">{call.url}</span>
-                                      <span className={`text-right font-mono ${statusColor(call.statusCode)}`}>
-                                        {call.statusCode}
-                                      </span>
-                                      <span className={`text-right font-mono ${responseTimeColor(call.responseTime)}`}>
-                                        {call.responseTime}ms
-                                      </span>
-                                    </div>
-                                  ))}
-                                </div>
-                              ))}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
+                    <tr key={result.id} className="border-b border-border text-xs hover:bg-muted/30">
+                      <td className="max-w-[240px] px-3 py-2.5">
+                        <span className="block truncate">{result.workflowName}</span>
+                      </td>
+                      <td className="px-3 py-2.5 text-center">
+                        <StatusPill status={result.status} />
+                      </td>
+                      <td className="px-3 py-2.5 text-right">{result.summary.total}</td>
+                      <td className="px-3 py-2.5 text-right text-emerald-500">{result.summary.passed}</td>
+                      <td className="px-3 py-2.5 text-right text-red-500">{result.summary.failed}</td>
+                      <td className="px-3 py-2.5 text-right">{result.summary.avgResponseTime}ms</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right text-muted-foreground">
+                        {new Date(result.startedAt).toLocaleString()}
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>
             </table>
+            {filteredResults.length === 0 && (
+              <div className="p-10 text-center text-sm text-muted-foreground">
+                No run reports match the current filters.
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -391,15 +698,11 @@ function ExpandedCall({ call }: { call: CallRecord }) {
     <div className="grid gap-4 bg-muted/20 p-4 md:grid-cols-2">
       <div>
         <p className="mb-1.5 text-[10px] text-muted-foreground">Request payload</p>
-        <pre className="max-h-36 overflow-auto rounded-md border border-border bg-background p-2 text-[10px]">
-          {call.requestPayload || "(empty)"}
-        </pre>
+        <CodePreview value={call.requestPayload} preferJson />
       </div>
       <div>
         <p className="mb-1.5 text-[10px] text-muted-foreground">Response body</p>
-        <pre className="max-h-36 overflow-auto rounded-md border border-border bg-background p-2 text-[10px]">
-          {call.responseBody}
-        </pre>
+        <CodePreview value={call.responseBody} preferJson />
       </div>
       {call.error && (
         <div className="rounded-md border border-red-500/20 bg-red-500/10 p-2 text-[10px] text-red-500 md:col-span-2">
@@ -450,15 +753,24 @@ function CallHistoryTable({
     return Array.from(options.entries());
   }, [calls, workflows]);
 
-  const filtered = calls.filter((call) => {
-    if (filterWorkflow && call.workflowId !== filterWorkflow) return false;
-    if (filterStatus && !String(call.statusCode).startsWith(filterStatus[0])) return false;
-    if (onlyErrors && !call.error && call.statusCode < 400) return false;
-    if (onlyFailedAssertions && !call.assertions.some((assertion) => !assertion.passed)) {
-      return false;
-    }
-    return true;
-  });
+  const filtered = useMemo(
+    () =>
+      calls
+        .filter((call) => {
+          if (filterWorkflow && call.workflowId !== filterWorkflow) return false;
+          if (filterStatus && !String(call.statusCode).startsWith(filterStatus[0])) return false;
+          if (onlyErrors && !call.error && call.statusCode < 400) return false;
+          if (onlyFailedAssertions && !call.assertions.some((assertion) => !assertion.passed)) {
+            return false;
+          }
+          return true;
+        })
+        .sort(
+          (a, b) =>
+            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        ),
+    [calls, filterStatus, filterWorkflow, onlyErrors, onlyFailedAssertions]
+  );
 
   const toggleRow = (id: string) => {
     setExpandedRows((current) => {
@@ -655,7 +967,7 @@ export function HistoryView({
       </div>
       <div className="min-h-0 flex-1">
         {tab === "reports" ? (
-          <RunReportPanel results={results} />
+          <RunReportPanel results={results} workflows={workflows} />
         ) : (
           <CallHistoryTable calls={calls} workflows={workflows} />
         )}

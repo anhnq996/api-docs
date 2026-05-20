@@ -84,6 +84,19 @@ type RunnerResponse = {
   contentType: string;
 };
 
+type RunnerProxyBody =
+  | { bodyType: "none"; body?: undefined }
+  | { bodyType: "text"; body: string }
+  | { bodyType: "form-data"; body: [string, string][] };
+
+type RunnerProxyResponse = {
+  status: number;
+  statusText: string;
+  headers: [string, string][];
+  body: string;
+  error?: string;
+};
+
 type ResponseCapture = {
   id: string;
   enabled: boolean;
@@ -129,6 +142,17 @@ type FieldOption = {
   preview: string;
 };
 
+type SuggestionOption = {
+  value: string;
+  label?: string;
+  detail?: string;
+};
+
+type EnvTrigger = {
+  start: number;
+  query: string;
+};
+
 const DEFAULT_AUTH: AuthConfig = {
   type: "none",
   bearerToken: "",
@@ -149,6 +173,8 @@ const DEFAULT_PRE_SCRIPT =
 
 const DEFAULT_POST_SCRIPT =
   "// Runs after the response.\n// const data = pm.response.json();\n// pm.environment.set('token', data.access_token);\n// console.log('status', pm.response.status);\n";
+
+const RUNNER_PROXY_PATH = "/api/runner-proxy";
 
 const EMPTY_VALUES: RunnerValues = {
   params: {},
@@ -184,6 +210,165 @@ const BODY_MODES: {
     icon: <FormInput className="size-3.5" />,
   },
   { value: "raw", label: "Raw", icon: <FileText className="size-3.5" /> },
+];
+
+const COMMON_HEADER_PRESETS: {
+  name: string;
+  detail: string;
+  values: string[];
+}[] = [
+  {
+    name: "Accept",
+    detail: "Response media type",
+    values: ["application/json", "application/xml", "text/plain", "*/*"],
+  },
+  {
+    name: "Accept-Charset",
+    detail: "Response charset",
+    values: ["utf-8"],
+  },
+  {
+    name: "Accept-Encoding",
+    detail: "Response compression",
+    values: ["gzip, deflate, br", "gzip"],
+  },
+  {
+    name: "Accept-Language",
+    detail: "Preferred language",
+    values: ["en-US,en;q=0.9", "vi-VN,vi;q=0.9,en-US;q=0.8"],
+  },
+  {
+    name: "Authorization",
+    detail: "Bearer, Basic, or token auth",
+    values: ["Bearer {{access_token}}", "Basic {{basic_token}}"],
+  },
+  {
+    name: "Cache-Control",
+    detail: "Cache behavior",
+    values: ["no-cache", "no-store", "max-age=0"],
+  },
+  {
+    name: "Content-MD5",
+    detail: "Body checksum",
+    values: ["{{content_md5}}"],
+  },
+  {
+    name: "Content-Type",
+    detail: "Request body media type",
+    values: [
+      "application/json",
+      "application/x-www-form-urlencoded",
+      "multipart/form-data",
+      "text/plain",
+      "application/xml",
+      "application/octet-stream",
+    ],
+  },
+  {
+    name: "Cookie",
+    detail: "Cookie header",
+    values: ["session={{session_id}}", "token={{access_token}}"],
+  },
+  {
+    name: "DNT",
+    detail: "Do not track",
+    values: ["1"],
+  },
+  {
+    name: "Idempotency-Key",
+    detail: "Safe retry key",
+    values: ["{{idempotency_key}}"],
+  },
+  {
+    name: "If-Match",
+    detail: "Conditional request ETag",
+    values: ["{{etag}}"],
+  },
+  {
+    name: "If-Modified-Since",
+    detail: "Conditional request date",
+    values: ["Wed, 21 Oct 2015 07:28:00 GMT"],
+  },
+  {
+    name: "If-None-Match",
+    detail: "Conditional request ETag",
+    values: ["{{etag}}", "*"],
+  },
+  {
+    name: "Origin",
+    detail: "Request origin",
+    values: ["https://example.com"],
+  },
+  {
+    name: "Prefer",
+    detail: "Server preference",
+    values: ["return=representation", "return=minimal"],
+  },
+  {
+    name: "Range",
+    detail: "Partial content range",
+    values: ["bytes=0-1023"],
+  },
+  {
+    name: "Referer",
+    detail: "Referring page",
+    values: ["https://example.com"],
+  },
+  {
+    name: "User-Agent",
+    detail: "Client identifier",
+    values: ["ApiDocsRunner/1.0"],
+  },
+  {
+    name: "X-API-Key",
+    detail: "API key auth",
+    values: ["{{api_key}}"],
+  },
+  {
+    name: "X-Auth-Token",
+    detail: "Token auth",
+    values: ["{{auth_token}}"],
+  },
+  {
+    name: "X-Client-ID",
+    detail: "Client identifier",
+    values: ["{{client_id}}"],
+  },
+  {
+    name: "X-Client-Secret",
+    detail: "Client secret",
+    values: ["{{client_secret}}"],
+  },
+  {
+    name: "X-Correlation-ID",
+    detail: "Distributed trace correlation",
+    values: ["{{correlation_id}}"],
+  },
+  {
+    name: "X-CSRF-Token",
+    detail: "CSRF protection token",
+    values: ["{{csrf_token}}"],
+  },
+  {
+    name: "X-Forwarded-For",
+    detail: "Original client IP",
+    values: ["203.0.113.10"],
+  },
+  {
+    name: "X-HTTP-Method-Override",
+    detail: "Method override",
+    values: ["PATCH", "PUT", "DELETE"],
+  },
+  {
+    name: "X-Request-ID",
+    detail: "Request tracing",
+    values: ["{{request_id}}"],
+  },
+  {
+    name: "X-Tenant-ID",
+    detail: "Tenant routing",
+    values: ["{{tenant_id}}"],
+  },
 ];
 
 const codeFont = '"Fira Code", "JetBrains Mono", "Cascadia Code", Consolas, monospace';
@@ -301,6 +486,83 @@ function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function isSuccessfulStatus(status: number) {
+  return status >= 200 && status < 300;
+}
+
+function headerValue(headers: [string, string][], name: string) {
+  return headers.find(([headerName]) => headerName.toLowerCase() === name.toLowerCase())?.[1];
+}
+
+function serializeRunnerProxyBody(body: BodyInit | undefined): RunnerProxyBody {
+  if (body === undefined) return { bodyType: "none" };
+  if (typeof body === "string") return { bodyType: "text", body };
+  if (body instanceof URLSearchParams) {
+    return { bodyType: "text", body: body.toString() };
+  }
+  if (body instanceof FormData) {
+    return {
+      bodyType: "form-data",
+      body: Array.from(body.entries()).map(([name, value]) => [
+        name,
+        typeof value === "string" ? value : value.name,
+      ]),
+    };
+  }
+  return { bodyType: "text", body: String(body) };
+}
+
+function normalizeProxyHeaders(value: unknown): [string, string][] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is [unknown, unknown] => Array.isArray(item) && item.length >= 2)
+    .map(([name, headerValue]) => [String(name), String(headerValue)]);
+}
+
+async function runnerProxyFetch({
+  url,
+  method,
+  headers,
+  body,
+}: {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: BodyInit;
+}): Promise<RunnerProxyResponse> {
+  const response = await fetch(RUNNER_PROXY_PATH, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url,
+      method,
+      headers,
+      ...serializeRunnerProxyBody(body),
+    }),
+  });
+  const text = await response.text();
+  const payload = parseJsonBody(text) as Partial<RunnerProxyResponse> | undefined;
+
+  if (!response.ok) {
+    throw new Error(
+      typeof payload?.error === "string"
+        ? payload.error
+        : `Runner proxy failed with ${response.status} ${response.statusText}`.trim()
+    );
+  }
+
+  if (!payload || typeof payload.status !== "number" || typeof payload.body !== "string") {
+    throw new Error("Runner proxy returned an invalid response.");
+  }
+
+  return {
+    status: payload.status,
+    statusText: typeof payload.statusText === "string" ? payload.statusText : "",
+    headers: normalizeProxyHeaders(payload.headers),
+    body: payload.body,
+  };
 }
 
 function quoteShellValue(value: string) {
@@ -674,6 +936,366 @@ function makeCapture(source: CaptureSource, path: string, variableName = ""): Re
   };
 }
 
+function uniqueSuggestionOptions(options: SuggestionOption[]) {
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    const key = option.value.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function filterSuggestionOptions(options: SuggestionOption[], query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return options.slice(0, 12);
+  return options
+    .filter((option) => {
+      const label = option.label ?? option.value;
+      return (
+        option.value.toLowerCase().includes(normalized) ||
+        label.toLowerCase().includes(normalized) ||
+        option.detail?.toLowerCase().includes(normalized)
+      );
+    })
+    .sort((a, b) => {
+      const aValue = a.value.toLowerCase();
+      const bValue = b.value.toLowerCase();
+      const aStarts = aValue.startsWith(normalized);
+      const bStarts = bValue.startsWith(normalized);
+      if (aStarts !== bStarts) return aStarts ? -1 : 1;
+      return a.value.localeCompare(b.value);
+    })
+    .slice(0, 12);
+}
+
+function headerNameSuggestions() {
+  return COMMON_HEADER_PRESETS.map((header) => ({
+    value: header.name,
+    label: header.name,
+    detail: header.values[0] ? `${header.detail} · ${header.values[0]}` : header.detail,
+  }));
+}
+
+function headerValueSuggestions(headerName: string, preferredContentType = "") {
+  const normalized = headerName.trim().toLowerCase();
+  const preset = COMMON_HEADER_PRESETS.find(
+    (header) => header.name.toLowerCase() === normalized
+  );
+  const values =
+    preset || normalized
+      ? preset?.values ?? []
+      : COMMON_HEADER_PRESETS.flatMap((header) => header.values);
+  const preferred =
+    normalized === "content-type" && preferredContentType.trim()
+      ? [preferredContentType]
+      : [];
+
+  return uniqueSuggestionOptions(
+    [...preferred, ...values].map((value) => ({
+      value,
+      label: value,
+      detail: preset?.name ?? "Header value",
+    }))
+  );
+}
+
+function envTriggerAt(value: string, caret: number): EnvTrigger | null {
+  const beforeCaret = value.slice(0, caret);
+  const start = beforeCaret.lastIndexOf("{{");
+  if (start < 0) return null;
+  if (beforeCaret.lastIndexOf("}}") > start) return null;
+  const rawQuery = beforeCaret.slice(start + 2);
+  if (!/^\s*[\w.-]*$/.test(rawQuery)) return null;
+  return { start, query: rawQuery.trimStart() };
+}
+
+function envReferenceSuggestions(variables: EnvironmentVariable[]) {
+  return variables.map((variable) => ({
+    value: `{{${variable.name}}}`,
+    label: `{{${variable.name}}}`,
+    detail: "environment variable",
+  }));
+}
+
+function SuggestionMenu({
+  options,
+  activeIndex,
+  onSelect,
+}: {
+  options: SuggestionOption[];
+  activeIndex: number;
+  onSelect: (option: SuggestionOption) => void;
+}) {
+  if (!options.length) return null;
+  return (
+    <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-56 overflow-y-auto rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl">
+      {options.map((option, index) => (
+        <button
+          key={`${option.value}-${index}`}
+          type="button"
+          onMouseDown={(event) => {
+            event.preventDefault();
+            onSelect(option);
+          }}
+          className={`block w-full rounded px-2 py-1.5 text-left text-xs ${
+            index === activeIndex ? "bg-accent text-accent-foreground" : "hover:bg-accent"
+          }`}
+        >
+          <span className="block truncate font-mono">{option.label ?? option.value}</span>
+          {option.detail && (
+            <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+              {option.detail}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AutocompleteInput({
+  value,
+  onChange,
+  suggestions = [],
+  envVariables = [],
+  className,
+  wrapperClassName,
+  onBlur,
+  onClick,
+  onFocus,
+  onKeyDown,
+  ...inputProps
+}: Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "className"> & {
+  value: string;
+  onChange: (value: string) => void;
+  suggestions?: SuggestionOption[];
+  envVariables?: EnvironmentVariable[];
+  className?: string;
+  wrapperClassName?: string;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [focused, setFocused] = useState(false);
+  const [caret, setCaret] = useState(value.length);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const trigger = envTriggerAt(value, caret);
+  const envOptions = trigger
+    ? filterSuggestionOptions(envReferenceSuggestions(envVariables), trigger.query)
+    : [];
+  const normalOptions = trigger ? [] : filterSuggestionOptions(suggestions, value);
+  const options = trigger ? envOptions : normalOptions;
+  const showMenu = focused && options.length > 0 && (Boolean(trigger) || suggestions.length > 0);
+
+  const updateCaret = (target: HTMLInputElement) => {
+    setCaret(target.selectionStart ?? target.value.length);
+  };
+
+  const selectOption = (option: SuggestionOption) => {
+    const input = inputRef.current;
+    const currentCaret = input?.selectionStart ?? caret;
+    if (trigger) {
+      const nextValue = `${value.slice(0, trigger.start)}${option.value}${value.slice(
+        currentCaret
+      )}`;
+      const nextCaret = trigger.start + option.value.length;
+      onChange(nextValue);
+      requestAnimationFrame(() => {
+        input?.focus();
+        input?.setSelectionRange(nextCaret, nextCaret);
+        setCaret(nextCaret);
+      });
+    } else {
+      onChange(option.value);
+      requestAnimationFrame(() => {
+        input?.focus();
+        input?.setSelectionRange(option.value.length, option.value.length);
+        setCaret(option.value.length);
+      });
+    }
+    setActiveIndex(0);
+    setFocused(false);
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (showMenu) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setActiveIndex((index) => (index + 1) % options.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setActiveIndex((index) => (index - 1 + options.length) % options.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        selectOption(options[activeIndex] ?? options[0]);
+        return;
+      }
+      if (event.key === "Escape") {
+        setFocused(false);
+        return;
+      }
+    }
+    onKeyDown?.(event);
+  };
+
+  return (
+    <div className={`relative ${wrapperClassName ?? ""}`}>
+      <input
+        {...inputProps}
+        ref={inputRef}
+        value={value}
+        onChange={(event) => {
+          onChange(event.target.value);
+          updateCaret(event.target);
+          setFocused(true);
+          setActiveIndex(0);
+        }}
+        onFocus={(event) => {
+          setFocused(true);
+          updateCaret(event.target);
+          onFocus?.(event);
+        }}
+        onClick={(event) => {
+          updateCaret(event.currentTarget);
+          onClick?.(event);
+        }}
+        onKeyUp={(event) => updateCaret(event.currentTarget)}
+        onKeyDown={handleKeyDown}
+        onBlur={(event) => {
+          setFocused(false);
+          onBlur?.(event);
+        }}
+        className={className}
+      />
+      {showMenu && (
+        <SuggestionMenu
+          options={options}
+          activeIndex={activeIndex}
+          onSelect={selectOption}
+        />
+      )}
+    </div>
+  );
+}
+
+function EnvAutocompleteTextarea({
+  value,
+  onChange,
+  envVariables = [],
+  className,
+  wrapperClassName,
+  onBlur,
+  onClick,
+  onFocus,
+  onKeyDown,
+  ...textareaProps
+}: Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "onChange" | "className"> & {
+  value: string;
+  onChange: (value: string) => void;
+  envVariables?: EnvironmentVariable[];
+  className?: string;
+  wrapperClassName?: string;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [focused, setFocused] = useState(false);
+  const [caret, setCaret] = useState(value.length);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const trigger = envTriggerAt(value, caret);
+  const options = trigger
+    ? filterSuggestionOptions(envReferenceSuggestions(envVariables), trigger.query)
+    : [];
+  const showMenu = focused && options.length > 0 && Boolean(trigger);
+
+  const updateCaret = (target: HTMLTextAreaElement) => {
+    setCaret(target.selectionStart ?? target.value.length);
+  };
+
+  const selectOption = (option: SuggestionOption) => {
+    const textarea = textareaRef.current;
+    const currentCaret = textarea?.selectionStart ?? caret;
+    if (!trigger) return;
+    const nextValue = `${value.slice(0, trigger.start)}${option.value}${value.slice(
+      currentCaret
+    )}`;
+    const nextCaret = trigger.start + option.value.length;
+    onChange(nextValue);
+    requestAnimationFrame(() => {
+      textarea?.focus();
+      textarea?.setSelectionRange(nextCaret, nextCaret);
+      setCaret(nextCaret);
+    });
+    setActiveIndex(0);
+    setFocused(false);
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showMenu) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setActiveIndex((index) => (index + 1) % options.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setActiveIndex((index) => (index - 1 + options.length) % options.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        selectOption(options[activeIndex] ?? options[0]);
+        return;
+      }
+      if (event.key === "Escape") {
+        setFocused(false);
+        return;
+      }
+    }
+    onKeyDown?.(event);
+  };
+
+  return (
+    <div className={`relative ${wrapperClassName ?? ""}`}>
+      <textarea
+        {...textareaProps}
+        ref={textareaRef}
+        value={value}
+        onChange={(event) => {
+          onChange(event.target.value);
+          updateCaret(event.target);
+          setFocused(true);
+          setActiveIndex(0);
+        }}
+        onFocus={(event) => {
+          setFocused(true);
+          updateCaret(event.target);
+          onFocus?.(event);
+        }}
+        onClick={(event) => {
+          updateCaret(event.currentTarget);
+          onClick?.(event);
+        }}
+        onKeyUp={(event) => updateCaret(event.currentTarget)}
+        onKeyDown={handleKeyDown}
+        onBlur={(event) => {
+          setFocused(false);
+          onBlur?.(event);
+        }}
+        className={className}
+      />
+      {showMenu && (
+        <SuggestionMenu
+          options={options}
+          activeIndex={activeIndex}
+          onSelect={selectOption}
+        />
+      )}
+    </div>
+  );
+}
+
 function MiniTabs<T extends string>({
   value,
   items,
@@ -814,11 +1436,19 @@ function KeyValueEditor({
   emptyText,
   onChange,
   showEmptyState = true,
+  keySuggestions = [],
+  valueSuggestions = [],
+  keyEnvVariables = [],
+  valueEnvVariables = [],
 }: {
   rows: KeyValueRow[];
   emptyText: string;
   onChange: (rows: KeyValueRow[]) => void;
   showEmptyState?: boolean;
+  keySuggestions?: SuggestionOption[];
+  valueSuggestions?: SuggestionOption[] | ((row: KeyValueRow) => SuggestionOption[]);
+  keyEnvVariables?: EnvironmentVariable[];
+  valueEnvVariables?: EnvironmentVariable[];
 }) {
   const updateRow = (id: string, patch: Partial<KeyValueRow>) => {
     onChange(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
@@ -836,17 +1466,27 @@ function KeyValueEditor({
               className="mt-2.5"
               aria-label="Enable row"
             />
-            <input
+            <AutocompleteInput
               value={row.key}
-              onChange={(e) => updateRow(row.id, { key: e.target.value })}
+              onChange={(key) => updateRow(row.id, { key })}
               placeholder="Key"
-              className="min-w-0 rounded-md border border-border bg-input-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              suggestions={keySuggestions}
+              envVariables={keyEnvVariables}
+              wrapperClassName="min-w-0"
+              className="w-full min-w-0 rounded-md border border-border bg-input-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
-            <input
+            <AutocompleteInput
               value={row.value}
-              onChange={(e) => updateRow(row.id, { value: e.target.value })}
+              onChange={(value) => updateRow(row.id, { value })}
               placeholder="Value"
-              className="min-w-0 rounded-md border border-border bg-input-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              suggestions={
+                typeof valueSuggestions === "function"
+                  ? valueSuggestions(row)
+                  : valueSuggestions
+              }
+              envVariables={valueEnvVariables}
+              wrapperClassName="min-w-0"
+              className="w-full min-w-0 rounded-md border border-border bg-input-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <button
               onClick={() => onChange(rows.filter((item) => item.id !== row.id))}
@@ -954,10 +1594,12 @@ function formatJsonText(value: string) {
 function JsonEditor({
   value,
   onChange,
+  envVariables = [],
   rows = 13,
 }: {
   value: string;
   onChange: (value: string) => void;
+  envVariables?: EnvironmentVariable[];
   rows?: number;
 }) {
   const isDark = useIsDark();
@@ -990,7 +1632,7 @@ function JsonEditor({
   return (
     <div className="space-y-2">
       <div
-        className="relative overflow-hidden rounded-xl transition-all"
+        className="relative overflow-visible rounded-xl transition-all"
         style={{
           border: isDark ? "1px solid #30363d" : "1px solid #d0d7de",
           background: isDark ? "#0d1117" : "#f6f8fa",
@@ -1038,14 +1680,15 @@ function JsonEditor({
               {value || " "}
             </SyntaxHighlighter>
           </div>
-          <textarea
+          <EnvAutocompleteTextarea
             value={value}
             onChange={(event) => {
-              onChange(event.target.value);
+              onChange(event);
               if (formatError) setFormatError(null);
             }}
             onKeyDown={onKeyDown}
             onScroll={onScroll}
+            envVariables={envVariables}
             spellCheck={false}
             rows={rows}
             className="relative block w-full resize-y overflow-auto bg-transparent p-3 font-mono text-xs leading-[1.65] text-transparent caret-foreground selection:bg-primary/25 focus:outline-none"
@@ -1529,31 +2172,33 @@ export function ApiRunner({
           resolveEnvReferences(value, workingEnvironment),
         ])
       );
-      const res = await fetch(resolvedUrl, {
+      const proxyResponse = await runnerProxyFetch({
+        url: resolvedUrl,
         method: endpoint.method,
         headers: resolvedHeaders,
         body: canSendBody ? requestBody.body : undefined,
       });
-      const text = await res.text();
+      const text = proxyResponse.body;
+      const responseContentType = headerValue(proxyResponse.headers, "content-type") ?? "";
       const nextResponse: RunnerResponse = {
-        status: res.status,
-        statusText: res.statusText,
+        status: proxyResponse.status,
+        statusText: proxyResponse.statusText,
         // eslint-disable-next-line react-hooks/purity
         durationMs: Math.round(performance.now() - started),
         size: new Blob([text]).size,
-        headers: Array.from(res.headers.entries()),
-        body: formatResponseBody(text, res.headers.get("content-type") ?? ""),
+        headers: proxyResponse.headers,
+        body: formatResponseBody(text, responseContentType),
         rawBody: text,
-        contentType: res.headers.get("content-type") ?? "",
+        contentType: responseContentType,
       };
       setResponse(nextResponse);
       const captureUpdates = responseCaptureUpdates(nextResponse);
       workingEnvironment = mergeEnvironmentUpdates(workingEnvironment, captureUpdates);
       setValues((current) => ({ ...current, responseTab: "pretty" }));
       pushConsole("info", "system", [
-        `Response ${res.status} ${res.statusText} - ${nextResponse.durationMs} ms - ${formatSize(
-          nextResponse.size
-        )}`,
+        `Response ${nextResponse.status} ${nextResponse.statusText} - ${
+          nextResponse.durationMs
+        } ms - ${formatSize(nextResponse.size)}`,
       ]);
 
       const pmPost = {
@@ -1561,7 +2206,7 @@ export function ApiRunner({
         response: {
           status: nextResponse.status,
           statusText: nextResponse.statusText,
-          ok: res.ok,
+          ok: isSuccessfulStatus(nextResponse.status),
           headers: Object.fromEntries(nextResponse.headers),
           text: nextResponse.rawBody,
           json: () => parseJsonBody(nextResponse.rawBody) ?? null,
@@ -1647,12 +2292,38 @@ export function ApiRunner({
   };
 
   const copyText = async (text: string, key: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(key);
+    const markCopied = (value: string) => {
+      setCopied(value);
       setTimeout(() => setCopied(null), 1500);
+    };
+    const fallbackCopy = () => {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      const copiedWithFallback = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      if (!copiedWithFallback) throw new Error("Could not copy text.");
+    };
+
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        fallbackCopy();
+      }
+      markCopied(key);
     } catch {
-      // ignore
+      try {
+        fallbackCopy();
+        markCopied(key);
+      } catch {
+        markCopied(`${key}-error`);
+      }
     }
   };
 
@@ -1700,15 +2371,16 @@ export function ApiRunner({
         body.set("client_secret", resolveEnvReferences(auth.oauth2ClientSecret, environment));
       }
       if (auth.oauth2Scope) body.set("scope", resolveEnvReferences(auth.oauth2Scope, environment));
-      const response = await fetch(resolveEnvReferences(auth.oauth2TokenUrl, environment), {
+      const response = await runnerProxyFetch({
+        url: resolveEnvReferences(auth.oauth2TokenUrl, environment),
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body,
       });
-      const text = await response.text();
+      const text = response.body;
       const json = parseJsonBody(text) as Record<string, unknown> | undefined;
       const token = typeof json?.access_token === "string" ? json.access_token : "";
-      if (!response.ok || !token) {
+      if (!isSuccessfulStatus(response.status) || !token) {
         throw new Error(
           token
             ? `${response.status} ${response.statusText}`
@@ -1858,15 +2530,31 @@ export function ApiRunner({
           <button
             type="button"
             onClick={() => copyText(curlText, "curl")}
-            className="flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border px-2 text-xs hover:bg-accent"
-            title="Copy as cURL"
+            className={`flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2 text-xs hover:bg-accent ${
+              copied === "curl-error"
+                ? "border-destructive text-destructive"
+                : "border-border"
+            }`}
+            title={
+              copied === "curl"
+                ? "Copied cURL command"
+                : copied === "curl-error"
+                  ? "Could not copy cURL command"
+                  : "Copy as cURL"
+            }
           >
             {copied === "curl" ? (
               <Check className="size-3.5 shrink-0 text-emerald-500" />
+            ) : copied === "curl-error" ? (
+              <AlertCircle className="size-3.5 shrink-0" />
             ) : (
               <Terminal className="size-3.5 shrink-0" />
             )}
-            cURL
+            {copied === "curl"
+              ? "Copied"
+              : copied === "curl-error"
+                ? "Copy failed"
+                : "cURL"}
           </button>
           <button
             onClick={onClose}
@@ -1966,12 +2654,14 @@ export function ApiRunner({
                             {param.in}
                           </span>
                         </div>
-                        <input
+                        <AutocompleteInput
                           value={values.params[id] ?? defaultParamValue(param)}
-                          onChange={(e) => setParam(param, e.target.value)}
+                          onChange={(value) => setParam(param, value)}
                           placeholder={param.description || param.type}
                           disabled={!enabled}
-                          className="min-w-0 rounded-md border border-border bg-input-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+                          envVariables={environment}
+                          wrapperClassName="min-w-0"
+                          className="w-full min-w-0 rounded-md border border-border bg-input-background px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
                         />
                         <button
                           onClick={() => hideParam(param)}
@@ -2010,6 +2700,7 @@ export function ApiRunner({
               rows={values.customParams}
               emptyText="No custom query params."
               showEmptyState={visibleSpecParams.length === 0}
+              valueEnvVariables={environment}
               onChange={(customParams) =>
                 setValues((current) => ({ ...current, customParams }))
               }
@@ -2029,10 +2720,17 @@ export function ApiRunner({
                         {param.required ? "required" : "optional"}
                       </span>
                     </div>
-                    <input
+                    <AutocompleteInput
                       value={value}
-                      onChange={(e) => setHeader(param, e.target.value)}
+                      onChange={(nextValue) => setHeader(param, nextValue)}
                       placeholder={helper}
+                      suggestions={headerValueSuggestions(
+                        param.name,
+                        contentTypeForMode(bodyMode, activeBody, values) ||
+                          activeBody?.contentType ||
+                          ""
+                      )}
+                      envVariables={environment}
                       className="w-full rounded-md border border-border bg-input-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                   </label>
@@ -2044,6 +2742,15 @@ export function ApiRunner({
               rows={values.customHeaders}
               emptyText="No custom headers."
               showEmptyState={visibleHeaders.length === 0}
+              keySuggestions={headerNameSuggestions()}
+              valueSuggestions={(row) =>
+                headerValueSuggestions(
+                  row.key,
+                  contentTypeForMode(bodyMode, activeBody, values) || activeBody?.contentType || ""
+                )
+              }
+              keyEnvVariables={environment}
+              valueEnvVariables={environment}
               onChange={(customHeaders) =>
                 setValues((current) => ({ ...current, customHeaders }))
               }
@@ -2094,27 +2801,33 @@ export function ApiRunner({
               <JsonEditor
                 value={getJsonBodyText(activeBody, values)}
                 onChange={setJsonBody}
+                envVariables={environment}
               />
             )}
 
             {bodyMode === "raw" && (
               <div className="space-y-2">
-                <input
+                <AutocompleteInput
                   value={values.rawContentType}
-                  onChange={(e) =>
+                  onChange={(rawContentType) =>
                     setValues((current) => ({
                       ...current,
-                      rawContentType: e.target.value,
+                      rawContentType,
                     }))
                   }
                   placeholder="text/plain"
+                  suggestions={headerValueSuggestions(
+                    "Content-Type",
+                    activeBody?.contentType || ""
+                  )}
                   className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                 />
-                <textarea
+                <EnvAutocompleteTextarea
                   value={values.rawBody || stringifyExample(activeBody?.example)}
-                  onChange={(e) =>
-                    setValues((current) => ({ ...current, rawBody: e.target.value }))
+                  onChange={(rawBody) =>
+                    setValues((current) => ({ ...current, rawBody }))
                   }
+                  envVariables={environment}
                   spellCheck={false}
                   rows={13}
                   className="w-full resize-y rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-ring"
@@ -2126,6 +2839,7 @@ export function ApiRunner({
               <KeyValueEditor
                 rows={formDataRows}
                 emptyText="No form-data fields yet."
+                valueEnvVariables={environment}
                 onChange={(formDataRows) =>
                   setValues((current) => ({ ...current, formDataRows }))
                 }
@@ -2136,6 +2850,7 @@ export function ApiRunner({
               <KeyValueEditor
                 rows={formUrlRows}
                 emptyText="No form-urlencoded fields yet."
+                valueEnvVariables={environment}
                 onChange={(formUrlRows) =>
                   setValues((current) => ({ ...current, formUrlRows }))
                 }
@@ -2173,10 +2888,11 @@ export function ApiRunner({
             {values.auth.type === "bearer" && (
               <label className="block space-y-1.5">
                 <span className="text-xs text-muted-foreground">Bearer token</span>
-                <input
+                <AutocompleteInput
                   value={values.auth.bearerToken}
-                  onChange={(event) => setAuth({ bearerToken: event.target.value })}
+                  onChange={(bearerToken) => setAuth({ bearerToken })}
                   placeholder="eyJ... or {{token}}"
+                  envVariables={environment}
                   className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                 />
                 <span className="block text-[11px] text-muted-foreground">
@@ -2189,18 +2905,20 @@ export function ApiRunner({
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label className="block space-y-1.5">
                   <span className="text-xs text-muted-foreground">Username</span>
-                  <input
+                  <AutocompleteInput
                     value={values.auth.basicUsername}
-                    onChange={(event) => setAuth({ basicUsername: event.target.value })}
+                    onChange={(basicUsername) => setAuth({ basicUsername })}
+                    envVariables={environment}
                     className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                   />
                 </label>
                 <label className="block space-y-1.5">
                   <span className="text-xs text-muted-foreground">Password</span>
-                  <input
+                  <AutocompleteInput
                     type="password"
                     value={values.auth.basicPassword}
-                    onChange={(event) => setAuth({ basicPassword: event.target.value })}
+                    onChange={(basicPassword) => setAuth({ basicPassword })}
+                    envVariables={environment}
                     className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                   />
                 </label>
@@ -2212,18 +2930,23 @@ export function ApiRunner({
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <label className="block space-y-1.5">
                     <span className="text-xs text-muted-foreground">Key</span>
-                    <input
+                    <AutocompleteInput
                       value={values.auth.apiKeyName}
-                      onChange={(event) => setAuth({ apiKeyName: event.target.value })}
+                      onChange={(apiKeyName) => setAuth({ apiKeyName })}
+                      suggestions={
+                        values.auth.apiKeyIn === "header" ? headerNameSuggestions() : []
+                      }
+                      envVariables={environment}
                       className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                   </label>
                   <label className="block space-y-1.5">
                     <span className="text-xs text-muted-foreground">Value</span>
-                    <input
+                    <AutocompleteInput
                       value={values.auth.apiKeyValue}
-                      onChange={(event) => setAuth({ apiKeyValue: event.target.value })}
+                      onChange={(apiKeyValue) => setAuth({ apiKeyValue })}
                       placeholder="{{api_key}}"
+                      envVariables={environment}
                       className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                   </label>
@@ -2248,10 +2971,11 @@ export function ApiRunner({
               <div className="space-y-3">
                 <label className="block space-y-1.5">
                   <span className="text-xs text-muted-foreground">Access token</span>
-                  <input
+                  <AutocompleteInput
                     value={values.auth.oauth2AccessToken}
-                    onChange={(event) => setAuth({ oauth2AccessToken: event.target.value })}
+                    onChange={(oauth2AccessToken) => setAuth({ oauth2AccessToken })}
                     placeholder="{{access_token}}"
+                    envVariables={environment}
                     className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                   />
                 </label>
@@ -2276,38 +3000,42 @@ export function ApiRunner({
                   </div>
                   <label className="block space-y-1.5">
                     <span className="text-xs text-muted-foreground">Token URL</span>
-                    <input
+                    <AutocompleteInput
                       value={values.auth.oauth2TokenUrl}
-                      onChange={(event) => setAuth({ oauth2TokenUrl: event.target.value })}
+                      onChange={(oauth2TokenUrl) => setAuth({ oauth2TokenUrl })}
                       placeholder="https://auth.example.com/oauth/token"
+                      envVariables={environment}
                       className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                   </label>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <label className="block space-y-1.5">
                       <span className="text-xs text-muted-foreground">Client ID</span>
-                      <input
+                      <AutocompleteInput
                         value={values.auth.oauth2ClientId}
-                        onChange={(event) => setAuth({ oauth2ClientId: event.target.value })}
+                        onChange={(oauth2ClientId) => setAuth({ oauth2ClientId })}
+                        envVariables={environment}
                         className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                       />
                     </label>
                     <label className="block space-y-1.5">
                       <span className="text-xs text-muted-foreground">Client secret</span>
-                      <input
+                      <AutocompleteInput
                         type="password"
                         value={values.auth.oauth2ClientSecret}
-                        onChange={(event) => setAuth({ oauth2ClientSecret: event.target.value })}
+                        onChange={(oauth2ClientSecret) => setAuth({ oauth2ClientSecret })}
+                        envVariables={environment}
                         className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                       />
                     </label>
                   </div>
                   <label className="block space-y-1.5">
                     <span className="text-xs text-muted-foreground">Scope</span>
-                    <input
+                    <AutocompleteInput
                       value={values.auth.oauth2Scope}
-                      onChange={(event) => setAuth({ oauth2Scope: event.target.value })}
+                      onChange={(oauth2Scope) => setAuth({ oauth2Scope })}
                       placeholder="read write"
+                      envVariables={environment}
                       className="w-full rounded-md border border-border bg-input-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                   </label>

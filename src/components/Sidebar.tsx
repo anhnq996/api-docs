@@ -62,7 +62,7 @@ export function Sidebar({
   };
 
   return (
-    <aside className="w-[300px] shrink-0 h-full border-r border-border bg-sidebar text-sidebar-foreground flex flex-col">
+    <aside className="fixed inset-y-0 left-0 z-30 flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-sidebar text-sidebar-foreground">
       <div className="px-4 py-4 border-b border-sidebar-border flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           {onBackToProjects ? (
@@ -139,7 +139,7 @@ export function Sidebar({
         </div>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-2 py-3">
+      <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
         {spec.tags.map((tag) => {
           const endpoints = tag.endpoints.filter(
             (e) =>
@@ -196,7 +196,7 @@ export function Sidebar({
         })}
       </nav>
 
-      <div className="px-4 py-3 border-t border-sidebar-border">
+      <div className="sticky bottom-0 z-10 shrink-0 border-t border-sidebar-border bg-sidebar px-4 py-3">
         <div className="text-xs text-muted-foreground mb-2">Base URL</div>
         {servers.length > 1 ? (
           <div className="relative">

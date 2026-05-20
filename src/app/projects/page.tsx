@@ -120,7 +120,7 @@ function ProjectDocsContent() {
     JSON.stringify(buildOpenApiDocument(activeProject.spec, activeProject.name), null, 2);
 
   return (
-    <div className="size-full min-h-screen flex bg-background text-foreground">
+    <div className="h-screen w-full overflow-hidden bg-background text-foreground">
       <Sidebar
         spec={activeProject.spec}
         projectName={activeProject.name}
@@ -136,7 +136,7 @@ function ProjectDocsContent() {
         selectedBaseUrl={activeBaseUrl}
         onBaseUrlChange={setSelectedBaseUrl}
       />
-      <main className="flex-1 overflow-y-auto">
+      <main className="ml-[300px] h-screen overflow-y-auto">
         {active ? (
           <EndpointDetail
             key={active.id}

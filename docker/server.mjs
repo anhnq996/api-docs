@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { handleRunnerProxy } from "./runner-proxy.mjs";
 
 const root = join(fileURLToPath(new URL(".", import.meta.url)), "out");
 const port = Number(process.env.PORT || 3000);
@@ -201,6 +202,16 @@ createServer(async (req, res) => {
 
   if (pathname === "/api/auth/logout") {
     handleLogout(req, res);
+    return;
+  }
+
+  if (pathname === "/api/runner-proxy") {
+    if (!hasSession(req)) {
+      writeJson(res, 401, { error: "unauthorized" });
+      return;
+    }
+
+    await handleRunnerProxy(req, res);
     return;
   }
 

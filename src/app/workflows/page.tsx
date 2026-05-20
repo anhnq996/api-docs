@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -39,6 +39,7 @@ import {
   makeBlankWorkflow,
   makeStepFromEndpoint,
   type Assertion,
+  type AssertionResult,
   type AssertionOp,
   type AssertionType,
   type BodyMode,
@@ -59,6 +60,12 @@ import {
   updateWorkflowMembers,
   upsertWorkflow,
 } from "@/lib/data/workflows";
+import {
+  headerValue,
+  parseJsonBody,
+  runnerProxyFetch,
+  type RunnerProxyResponse,
+} from "@/lib/runnerProxy";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 const BODY_MODES: BodyMode[] = ["none", "raw", "form-data", "url-encoded"];
@@ -82,6 +89,17 @@ const ASSERTION_OPS: { value: AssertionOp; label: string }[] = [
 ];
 
 type MainView = "builder" | "multi-run" | "history";
+
+type SuggestionOption = {
+  value: string;
+  label?: string;
+  detail?: string;
+};
+
+type EnvTrigger = {
+  start: number;
+  query: string;
+};
 
 const VIEW_TABS: { id: MainView; label: string; Icon: LucideIcon }[] = [
   { id: "builder", label: "Builder", Icon: Layers },
@@ -107,6 +125,165 @@ const RUN_STATUS_UI: Record<WorkflowRunStatus, string> = {
   failed: "text-red-500 bg-red-500/10",
   cancelled: "text-muted-foreground bg-muted",
 };
+
+const COMMON_HEADER_PRESETS: {
+  name: string;
+  detail: string;
+  values: string[];
+}[] = [
+  {
+    name: "Accept",
+    detail: "Response media type",
+    values: ["application/json", "application/xml", "text/plain", "*/*"],
+  },
+  {
+    name: "Accept-Charset",
+    detail: "Response charset",
+    values: ["utf-8"],
+  },
+  {
+    name: "Accept-Encoding",
+    detail: "Response compression",
+    values: ["gzip, deflate, br", "gzip"],
+  },
+  {
+    name: "Accept-Language",
+    detail: "Preferred language",
+    values: ["en-US,en;q=0.9", "vi-VN,vi;q=0.9,en-US;q=0.8"],
+  },
+  {
+    name: "Authorization",
+    detail: "Bearer, Basic, or token auth",
+    values: ["Bearer {{access_token}}", "Basic {{basic_token}}"],
+  },
+  {
+    name: "Cache-Control",
+    detail: "Cache behavior",
+    values: ["no-cache", "no-store", "max-age=0"],
+  },
+  {
+    name: "Content-MD5",
+    detail: "Body checksum",
+    values: ["{{content_md5}}"],
+  },
+  {
+    name: "Content-Type",
+    detail: "Request body media type",
+    values: [
+      "application/json",
+      "application/x-www-form-urlencoded",
+      "multipart/form-data",
+      "text/plain",
+      "application/xml",
+      "application/octet-stream",
+    ],
+  },
+  {
+    name: "Cookie",
+    detail: "Cookie header",
+    values: ["session={{session_id}}", "token={{access_token}}"],
+  },
+  {
+    name: "DNT",
+    detail: "Do not track",
+    values: ["1"],
+  },
+  {
+    name: "Idempotency-Key",
+    detail: "Safe retry key",
+    values: ["{{idempotency_key}}"],
+  },
+  {
+    name: "If-Match",
+    detail: "Conditional request ETag",
+    values: ["{{etag}}"],
+  },
+  {
+    name: "If-Modified-Since",
+    detail: "Conditional request date",
+    values: ["Wed, 21 Oct 2015 07:28:00 GMT"],
+  },
+  {
+    name: "If-None-Match",
+    detail: "Conditional request ETag",
+    values: ["{{etag}}", "*"],
+  },
+  {
+    name: "Origin",
+    detail: "Request origin",
+    values: ["https://example.com"],
+  },
+  {
+    name: "Prefer",
+    detail: "Server preference",
+    values: ["return=representation", "return=minimal"],
+  },
+  {
+    name: "Range",
+    detail: "Partial content range",
+    values: ["bytes=0-1023"],
+  },
+  {
+    name: "Referer",
+    detail: "Referring page",
+    values: ["https://example.com"],
+  },
+  {
+    name: "User-Agent",
+    detail: "Client identifier",
+    values: ["ApiDocsRunner/1.0"],
+  },
+  {
+    name: "X-API-Key",
+    detail: "API key auth",
+    values: ["{{api_key}}"],
+  },
+  {
+    name: "X-Auth-Token",
+    detail: "Token auth",
+    values: ["{{auth_token}}"],
+  },
+  {
+    name: "X-Client-ID",
+    detail: "Client identifier",
+    values: ["{{client_id}}"],
+  },
+  {
+    name: "X-Client-Secret",
+    detail: "Client secret",
+    values: ["{{client_secret}}"],
+  },
+  {
+    name: "X-Correlation-ID",
+    detail: "Distributed trace correlation",
+    values: ["{{correlation_id}}"],
+  },
+  {
+    name: "X-CSRF-Token",
+    detail: "CSRF protection token",
+    values: ["{{csrf_token}}"],
+  },
+  {
+    name: "X-Forwarded-For",
+    detail: "Original client IP",
+    values: ["203.0.113.10"],
+  },
+  {
+    name: "X-HTTP-Method-Override",
+    detail: "Method override",
+    values: ["PATCH", "PUT", "DELETE"],
+  },
+  {
+    name: "X-Request-ID",
+    detail: "Request tracing",
+    values: ["{{request_id}}"],
+  },
+  {
+    name: "X-Tenant-ID",
+    detail: "Tenant routing",
+    values: ["{{tenant_id}}"],
+  },
+];
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -167,14 +344,261 @@ function allEndpoints(project: Project | null) {
     : [];
 }
 
+function uniqueSuggestionOptions(options: SuggestionOption[]) {
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    const key = option.value.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function filterSuggestionOptions(options: SuggestionOption[], query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return options.slice(0, 12);
+  return options
+    .filter((option) => {
+      const label = option.label ?? option.value;
+      return (
+        option.value.toLowerCase().includes(normalized) ||
+        label.toLowerCase().includes(normalized) ||
+        option.detail?.toLowerCase().includes(normalized)
+      );
+    })
+    .sort((a, b) => {
+      const aValue = a.value.toLowerCase();
+      const bValue = b.value.toLowerCase();
+      const aStarts = aValue.startsWith(normalized);
+      const bStarts = bValue.startsWith(normalized);
+      if (aStarts !== bStarts) return aStarts ? -1 : 1;
+      return a.value.localeCompare(b.value);
+    })
+    .slice(0, 12);
+}
+
+function headerNameSuggestions() {
+  return COMMON_HEADER_PRESETS.map((header) => ({
+    value: header.name,
+    label: header.name,
+    detail: header.values[0] ? `${header.detail} · ${header.values[0]}` : header.detail,
+  }));
+}
+
+function headerValueSuggestions(headerName: string) {
+  const normalized = headerName.trim().toLowerCase();
+  const preset = COMMON_HEADER_PRESETS.find(
+    (header) => header.name.toLowerCase() === normalized
+  );
+  const values =
+    preset || normalized
+      ? preset?.values ?? []
+      : COMMON_HEADER_PRESETS.flatMap((header) => header.values);
+
+  return uniqueSuggestionOptions(
+    values.map((value) => ({
+      value,
+      label: value,
+      detail: preset?.name ?? "Header value",
+    }))
+  );
+}
+
+function envTriggerAt(value: string, caret: number): EnvTrigger | null {
+  const beforeCaret = value.slice(0, caret);
+  const start = beforeCaret.lastIndexOf("{{");
+  if (start < 0) return null;
+  if (beforeCaret.lastIndexOf("}}") > start) return null;
+  const rawQuery = beforeCaret.slice(start + 2);
+  if (!/^\s*[\w.-]*$/.test(rawQuery)) return null;
+  return { start, query: rawQuery.trimStart() };
+}
+
+function envReferenceSuggestions(env: Record<string, string>) {
+  return Object.keys(env).map((name) => ({
+    value: `{{${name}}}`,
+    label: `{{${name}}}`,
+    detail: "workflow environment variable",
+  }));
+}
+
+function SuggestionMenu({
+  options,
+  activeIndex,
+  onSelect,
+}: {
+  options: SuggestionOption[];
+  activeIndex: number;
+  onSelect: (option: SuggestionOption) => void;
+}) {
+  if (!options.length) return null;
+  return (
+    <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-56 overflow-y-auto rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl">
+      {options.map((option, index) => (
+        <button
+          key={`${option.value}-${index}`}
+          type="button"
+          onMouseDown={(event) => {
+            event.preventDefault();
+            onSelect(option);
+          }}
+          className={`block w-full rounded px-2 py-1.5 text-left text-xs ${
+            index === activeIndex ? "bg-accent text-accent-foreground" : "hover:bg-accent"
+          }`}
+        >
+          <span className="block truncate font-mono">{option.label ?? option.value}</span>
+          {option.detail && (
+            <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+              {option.detail}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AutocompleteInput({
+  value,
+  onChange,
+  suggestions = [],
+  env = {},
+  className,
+  wrapperClassName,
+  onBlur,
+  onClick,
+  onFocus,
+  onKeyDown,
+  ...inputProps
+}: Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "className"> & {
+  value: string;
+  onChange: (value: string) => void;
+  suggestions?: SuggestionOption[];
+  env?: Record<string, string>;
+  className?: string;
+  wrapperClassName?: string;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [focused, setFocused] = useState(false);
+  const [caret, setCaret] = useState(value.length);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const trigger = envTriggerAt(value, caret);
+  const envOptions = trigger
+    ? filterSuggestionOptions(envReferenceSuggestions(env), trigger.query)
+    : [];
+  const normalOptions = trigger ? [] : filterSuggestionOptions(suggestions, value);
+  const options = trigger ? envOptions : normalOptions;
+  const showMenu = focused && options.length > 0 && (Boolean(trigger) || suggestions.length > 0);
+
+  const updateCaret = (target: HTMLInputElement) => {
+    setCaret(target.selectionStart ?? target.value.length);
+  };
+
+  const selectOption = (option: SuggestionOption) => {
+    const input = inputRef.current;
+    const currentCaret = input?.selectionStart ?? caret;
+    if (trigger) {
+      const nextValue = `${value.slice(0, trigger.start)}${option.value}${value.slice(
+        currentCaret
+      )}`;
+      const nextCaret = trigger.start + option.value.length;
+      onChange(nextValue);
+      requestAnimationFrame(() => {
+        input?.focus();
+        input?.setSelectionRange(nextCaret, nextCaret);
+        setCaret(nextCaret);
+      });
+    } else {
+      onChange(option.value);
+      requestAnimationFrame(() => {
+        input?.focus();
+        input?.setSelectionRange(option.value.length, option.value.length);
+        setCaret(option.value.length);
+      });
+    }
+    setActiveIndex(0);
+    setFocused(false);
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (showMenu) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setActiveIndex((index) => (index + 1) % options.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setActiveIndex((index) => (index - 1 + options.length) % options.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        selectOption(options[activeIndex] ?? options[0]);
+        return;
+      }
+      if (event.key === "Escape") {
+        setFocused(false);
+        return;
+      }
+    }
+    onKeyDown?.(event);
+  };
+
+  return (
+    <div className={`relative ${wrapperClassName ?? ""}`}>
+      <input
+        {...inputProps}
+        ref={inputRef}
+        value={value}
+        onChange={(event) => {
+          onChange(event.target.value);
+          updateCaret(event.target);
+          setFocused(true);
+          setActiveIndex(0);
+        }}
+        onFocus={(event) => {
+          setFocused(true);
+          updateCaret(event.target);
+          onFocus?.(event);
+        }}
+        onClick={(event) => {
+          updateCaret(event.currentTarget);
+          onClick?.(event);
+        }}
+        onKeyUp={(event) => updateCaret(event.currentTarget)}
+        onKeyDown={handleKeyDown}
+        onBlur={(event) => {
+          setFocused(false);
+          onBlur?.(event);
+        }}
+        className={className}
+      />
+      {showMenu && (
+        <SuggestionMenu
+          options={options}
+          activeIndex={activeIndex}
+          onSelect={selectOption}
+        />
+      )}
+    </div>
+  );
+}
+
 function KeyValueRows({
   rows,
   onChange,
   valuePlaceholder = "value",
+  keySuggestions = [],
+  valueSuggestions = [],
+  env = {},
 }: {
   rows: KeyValue[];
   onChange: (rows: KeyValue[]) => void;
   valuePlaceholder?: string;
+  keySuggestions?: SuggestionOption[];
+  valueSuggestions?: SuggestionOption[] | ((row: KeyValue) => SuggestionOption[]);
+  env?: Record<string, string>;
 }) {
   const update = (id: string, patch: Partial<KeyValue>) => {
     onChange(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
@@ -191,17 +615,25 @@ function KeyValueRows({
             className="accent-primary"
             aria-label="Enable row"
           />
-          <input
+          <AutocompleteInput
             value={row.key}
-            onChange={(event) => update(row.id, { key: event.target.value })}
+            onChange={(key) => update(row.id, { key })}
             placeholder="key"
-            className="min-w-0 rounded-md border border-border bg-input-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+            suggestions={keySuggestions}
+            env={env}
+            wrapperClassName="min-w-0"
+            className="w-full min-w-0 rounded-md border border-border bg-input-background px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
           />
-          <input
+          <AutocompleteInput
             value={row.value}
-            onChange={(event) => update(row.id, { value: event.target.value })}
+            onChange={(value) => update(row.id, { value })}
             placeholder={valuePlaceholder}
-            className="min-w-0 rounded-md border border-border bg-input-background px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+            suggestions={
+              typeof valueSuggestions === "function" ? valueSuggestions(row) : valueSuggestions
+            }
+            env={env}
+            wrapperClassName="min-w-0"
+            className="w-full min-w-0 rounded-md border border-border bg-input-background px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-ring"
           />
           <button
             onClick={() => onChange(rows.filter((item) => item.id !== row.id))}
@@ -545,9 +977,11 @@ function WorkflowStepList({
 
 function StepEditor({
   step,
+  env,
   onUpdate,
 }: {
   step: WorkflowStep | null;
+  env: Record<string, string>;
   onUpdate: (patch: Partial<WorkflowStep>) => void;
 }) {
   if (!step) {
@@ -671,7 +1105,13 @@ function StepEditor({
 
         <section className="space-y-2">
           <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Headers</div>
-          <KeyValueRows rows={request.headers} onChange={(headers) => updateRequest({ headers })} />
+          <KeyValueRows
+            rows={request.headers}
+            onChange={(headers) => updateRequest({ headers })}
+            keySuggestions={headerNameSuggestions()}
+            valueSuggestions={(row) => headerValueSuggestions(row.key)}
+            env={env}
+          />
         </section>
 
         <section className="space-y-2">
@@ -764,27 +1204,108 @@ function runtimeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function stepUrl(step: WorkflowStep) {
-  const baseUrl = step.request.baseUrl.trim().replace(/\/+$/, "");
-  const path = step.request.path.trim();
-  const normalizedPath = path ? (path.startsWith("/") ? path : `/${path}`) : "";
-  const query = new URLSearchParams();
+type WorkflowRuntimeEnv = Record<string, string>;
 
-  step.request.params
-    .filter((param) => param.enabled && param.key.trim())
-    .forEach((param) => query.append(param.key.trim(), param.value));
+type BuiltStepRequest = {
+  url: string;
+  headers: Record<string, string>;
+  body?: BodyInit;
+  requestPayload: string;
+};
 
-  const queryString = query.toString();
-  return `${baseUrl}${normalizedPath}${queryString ? `?${queryString}` : ""}` || "/";
+function stringifyRuntimeValue(value: unknown) {
+  if (value === undefined) return "missing";
+  if (value === null) return "null";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
-function requestPayload(step: WorkflowStep) {
+function resolveEnvReferences(value: string, env: WorkflowRuntimeEnv) {
+  if (!value.includes("{{")) return value;
+  return value.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (match, name: string) =>
+    Object.prototype.hasOwnProperty.call(env, name) ? env[name] : match
+  );
+}
+
+function joinBaseAndPath(baseUrl: string, requestPath: string) {
+  const base = new URL(baseUrl);
+  const basePath = base.pathname.endsWith("/") ? base.pathname.slice(0, -1) : base.pathname;
+  const childPath = requestPath.startsWith("/") ? requestPath : `/${requestPath}`;
+  base.pathname = `${basePath}${childPath}`.replace(/\/{2,}/g, "/");
+  base.search = "";
+  base.hash = "";
+  return base;
+}
+
+function stepUrl(step: WorkflowStep, env: WorkflowRuntimeEnv = {}) {
+  try {
+    let pathWithSearch = resolveEnvReferences(step.request.path.trim(), env);
+    const consumedParamIds = new Set<string>();
+
+    step.request.params
+      .filter((param) => param.enabled && param.key.trim())
+      .forEach((param) => {
+        const key = resolveEnvReferences(param.key.trim(), env);
+        const value = resolveEnvReferences(param.value, env);
+        if (!key) return;
+        const placeholder = `{${key}}`;
+        if (pathWithSearch.includes(placeholder)) {
+          pathWithSearch = pathWithSearch.replaceAll(placeholder, encodeURIComponent(value));
+          consumedParamIds.add(param.id);
+        }
+      });
+
+    const [pathOnly, search = ""] = pathWithSearch.split("?");
+    const url = joinBaseAndPath(resolveEnvReferences(step.request.baseUrl.trim(), env), pathOnly);
+    if (search) {
+      new URLSearchParams(search).forEach((value, key) => url.searchParams.append(key, value));
+    }
+
+    step.request.params
+      .filter((param) => param.enabled && param.key.trim() && !consumedParamIds.has(param.id))
+      .forEach((param) => {
+        url.searchParams.append(
+          resolveEnvReferences(param.key.trim(), env),
+          resolveEnvReferences(param.value, env)
+        );
+      });
+
+    return url.toString();
+  } catch {
+    const baseUrl = resolveEnvReferences(step.request.baseUrl.trim(), env).replace(/\/+$/, "");
+    const path = resolveEnvReferences(step.request.path.trim(), env);
+    const normalizedPath = path ? (path.startsWith("/") ? path : `/${path}`) : "";
+    const query = new URLSearchParams();
+
+    step.request.params
+      .filter((param) => param.enabled && param.key.trim())
+      .forEach((param) =>
+        query.append(
+          resolveEnvReferences(param.key.trim(), env),
+          resolveEnvReferences(param.value, env)
+        )
+      );
+
+    const queryString = query.toString();
+    return `${baseUrl}${normalizedPath}${queryString ? `?${queryString}` : ""}` || "/";
+  }
+}
+
+function requestPayload(step: WorkflowStep, env: WorkflowRuntimeEnv = {}) {
   if (step.request.bodyMode === "form-data") {
     return JSON.stringify(
       Object.fromEntries(
         (step.request.formData ?? [])
           .filter((row) => row.enabled && row.key.trim())
-          .map((row) => [row.key, row.value])
+          .map((row) => [
+            resolveEnvReferences(row.key, env),
+            resolveEnvReferences(row.value, env),
+          ])
       ),
       null,
       2
@@ -796,79 +1317,411 @@ function requestPayload(step: WorkflowStep) {
       Object.fromEntries(
         (step.request.urlEncoded ?? [])
           .filter((row) => row.enabled && row.key.trim())
-          .map((row) => [row.key, row.value])
+          .map((row) => [
+            resolveEnvReferences(row.key, env),
+            resolveEnvReferences(row.value, env),
+          ])
       ),
       null,
       2
     );
   }
 
-  return step.request.bodyMode === "raw" ? step.request.body : "";
+  return step.request.bodyMode === "raw"
+    ? resolveEnvReferences(step.request.body, env)
+    : "";
 }
 
-function simulatedStatusCode(method: HttpMethod, passed: boolean) {
-  if (passed) return method === "POST" ? 201 : 200;
-  const failures = [400, 401, 422, 500];
-  return failures[Math.floor(Math.random() * failures.length)];
+function setHeader(headers: Record<string, string>, name: string, value: string) {
+  const trimmedName = name.trim();
+  if (!trimmedName) return;
+  const existing = Object.keys(headers).find(
+    (headerName) => headerName.toLowerCase() === trimmedName.toLowerCase()
+  );
+  headers[existing ?? trimmedName] = value;
 }
 
-function makeSimulatedCall(workflow: Workflow, step: WorkflowStep, passed: boolean): CallRecord {
-  const statusCode = simulatedStatusCode(step.request.method, passed);
-  const responseTime = Math.floor(120 + Math.random() * (passed ? 900 : 2600));
-  const timestamp = new Date().toISOString();
-  const enabledAssertions = step.assertions.filter((assertion) => assertion.enabled);
-  const assertions =
-    enabledAssertions.length > 0
-      ? enabledAssertions.map((assertion) => ({
-          type: assertion.type,
-          field: assertion.field,
-          expected: assertion.operator === "exists" ? "exists" : assertion.expected,
-          actual:
-            assertion.type === "status"
-              ? String(statusCode)
-              : assertion.type === "responseTime"
-                ? String(responseTime)
-                : passed
-                  ? assertion.operator === "exists"
-                    ? "exists"
-                    : assertion.expected
-                  : "missing",
-          passed,
-        }))
-      : [
-          {
-            type: "status",
-            expected: "< 400",
-            actual: String(statusCode),
-            passed: statusCode < 400,
-          },
-        ];
+function hasHeader(headers: Record<string, string>, name: string) {
+  return Object.keys(headers).some((headerName) => headerName.toLowerCase() === name.toLowerCase());
+}
+
+function rawContentType(rawType: RawBodyType | undefined) {
+  if (rawType === "xml") return "application/xml";
+  if (rawType === "text") return "text/plain";
+  return "application/json";
+}
+
+function applyAuthHeaders(
+  headers: Record<string, string>,
+  step: WorkflowStep,
+  env: WorkflowRuntimeEnv
+) {
+  const auth = step.request.auth;
+  if (!auth || auth.type === "none") return;
+
+  if (auth.type === "bearer" && auth.token) {
+    setHeader(headers, "Authorization", `Bearer ${resolveEnvReferences(auth.token, env)}`);
+    return;
+  }
+
+  if (auth.type === "basic") {
+    const username = resolveEnvReferences(auth.username ?? "", env);
+    const password = resolveEnvReferences(auth.password ?? "", env);
+    if (username || password) {
+      setHeader(headers, "Authorization", `Basic ${btoa(`${username}:${password}`)}`);
+    }
+    return;
+  }
+
+  if (auth.type === "api-key" && auth.apiKey) {
+    setHeader(
+      headers,
+      resolveEnvReferences(auth.apiKeyHeader || "X-API-Key", env),
+      resolveEnvReferences(auth.apiKey, env)
+    );
+    return;
+  }
+
+  if (auth.type === "oauth2" && auth.oauthAccessToken) {
+    const prefix = resolveEnvReferences(auth.oauthHeaderPrefix || "Bearer", env).trim();
+    setHeader(
+      headers,
+      "Authorization",
+      `${prefix || "Bearer"} ${resolveEnvReferences(auth.oauthAccessToken, env)}`
+    );
+  }
+}
+
+function buildStepRequest(step: WorkflowStep, env: WorkflowRuntimeEnv): BuiltStepRequest {
+  const headers: Record<string, string> = {};
+  step.request.headers
+    .filter((row) => row.enabled && row.key.trim())
+    .forEach((row) =>
+      setHeader(headers, resolveEnvReferences(row.key, env), resolveEnvReferences(row.value, env))
+    );
+
+  applyAuthHeaders(headers, step, env);
+
+  const canSendBody = step.request.method !== "GET";
+  const bodyMode = step.request.bodyMode ?? "none";
+  let body: BodyInit | undefined;
+
+  if (canSendBody && bodyMode === "raw") {
+    body = resolveEnvReferences(step.request.body, env);
+    if (!hasHeader(headers, "content-type")) {
+      setHeader(headers, "Content-Type", rawContentType(step.request.rawType));
+    }
+  } else if (canSendBody && bodyMode === "url-encoded") {
+    const data = new URLSearchParams();
+    (step.request.urlEncoded ?? [])
+      .filter((row) => row.enabled && row.key.trim())
+      .forEach((row) =>
+        data.set(resolveEnvReferences(row.key, env), resolveEnvReferences(row.value, env))
+      );
+    body = data;
+    if (!hasHeader(headers, "content-type")) {
+      setHeader(headers, "Content-Type", "application/x-www-form-urlencoded");
+    }
+  } else if (canSendBody && bodyMode === "form-data") {
+    const data = new FormData();
+    (step.request.formData ?? [])
+      .filter((row) => row.enabled && row.key.trim())
+      .forEach((row) =>
+        data.set(resolveEnvReferences(row.key, env), resolveEnvReferences(row.value, env))
+      );
+    body = data;
+  }
 
   return {
-    id: runtimeId("call"),
-    workflowId: workflow.id,
-    workflowName: workflow.name,
-    stepId: step.id,
-    stepName: step.name,
-    method: step.request.method,
-    url: stepUrl(step),
-    statusCode,
-    responseTime,
-    requestPayload: requestPayload(step),
-    responseBody: JSON.stringify(
-      {
-        ok: passed,
-        workflowId: workflow.id,
-        stepId: step.id,
-        simulated: true,
-      },
-      null,
-      2
-    ),
-    error: passed ? undefined : `Simulated failure for ${step.name}`,
-    timestamp,
-    assertions,
+    url: stepUrl(step, env),
+    headers,
+    body,
+    requestPayload: requestPayload(step, env),
   };
+}
+
+function parsePath(path: string) {
+  const segments: Array<string | number> = [];
+  let index = path.startsWith("$") ? 1 : 0;
+  while (index < path.length) {
+    if (path[index] === ".") {
+      index += 1;
+      const start = index;
+      while (index < path.length && /[\w$]/.test(path[index])) index += 1;
+      segments.push(path.slice(start, index));
+      continue;
+    }
+    if (path[index] === "[") {
+      const end = path.indexOf("]", index);
+      if (end === -1) return segments;
+      const raw = path.slice(index + 1, end);
+      if (/^\d+$/.test(raw)) {
+        segments.push(Number(raw));
+      } else {
+        try {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed === "string") segments.push(parsed);
+        } catch {
+          segments.push(raw);
+        }
+      }
+      index = end + 1;
+      continue;
+    }
+    index += 1;
+  }
+  return segments;
+}
+
+function extractJsonPath(value: unknown, path: string) {
+  const normalizedPath = path.trim().startsWith("$") ? path.trim() : `$.${path.trim()}`;
+  if (normalizedPath === "$") return value;
+  return parsePath(normalizedPath).reduce<unknown>((current, segment) => {
+    if (current === null || current === undefined) return undefined;
+    if (typeof segment === "number" && Array.isArray(current)) return current[segment];
+    if (typeof segment === "string" && typeof current === "object") {
+      return (current as Record<string, unknown>)[segment];
+    }
+    return undefined;
+  }, value);
+}
+
+function compareAssertionValue(
+  actual: unknown,
+  expected: string,
+  operator: AssertionOp
+) {
+  if (operator === "exists") return actual !== undefined && actual !== null;
+  const actualText = stringifyRuntimeValue(actual);
+  const expectedText = expected;
+
+  if (operator === "eq") return actualText === expectedText;
+  if (operator === "ne") return actualText !== expectedText;
+  if (operator === "contains") return actualText.includes(expectedText);
+
+  const actualNumber = Number(actualText);
+  const expectedNumber = Number(expectedText);
+  if (!Number.isFinite(actualNumber) || !Number.isFinite(expectedNumber)) return false;
+
+  if (operator === "lt") return actualNumber < expectedNumber;
+  if (operator === "lte") return actualNumber <= expectedNumber;
+  if (operator === "gt") return actualNumber > expectedNumber;
+  if (operator === "gte") return actualNumber >= expectedNumber;
+  return false;
+}
+
+function assertionExpectedLabel(assertion: Assertion) {
+  return assertion.operator === "exists"
+    ? "exists"
+    : `${assertion.operator} ${assertion.expected}`;
+}
+
+function evaluateAssertions(
+  step: WorkflowStep,
+  response: RunnerProxyResponse,
+  responseTime: number
+): AssertionResult[] {
+  const enabledAssertions = step.assertions.filter((assertion) => assertion.enabled);
+  if (!enabledAssertions.length) {
+    return [
+      {
+        type: "status",
+        expected: "< 400",
+        actual: String(response.status),
+        passed: response.status > 0 && response.status < 400,
+      },
+    ];
+  }
+
+  const json = parseJsonBody(response.body);
+  return enabledAssertions.map((assertion) => {
+    let actual: unknown;
+
+    if (assertion.type === "status") {
+      actual = response.status;
+    } else if (assertion.type === "responseTime") {
+      actual = responseTime;
+    } else if (assertion.type === "header") {
+      actual = assertion.field ? headerValue(response.headers, assertion.field) : undefined;
+    } else if (assertion.type === "jsonField") {
+      actual = json === undefined ? undefined : extractJsonPath(json, assertion.field || "$");
+    } else {
+      actual = response.body;
+    }
+
+    return {
+      type: assertion.type,
+      field: assertion.field,
+      expected: assertionExpectedLabel(assertion),
+      actual: stringifyRuntimeValue(actual),
+      passed:
+        assertion.type === "bodyContains" && assertion.operator === "exists"
+          ? Boolean(response.body)
+          : compareAssertionValue(actual, assertion.expected, assertion.operator),
+    };
+  });
+}
+
+function envScriptApi(env: WorkflowRuntimeEnv) {
+  return {
+    get: (name: string) => env[name],
+    set: (name: string, value: unknown) => {
+      if (!name.trim()) return;
+      env[name.trim()] = stringifyRuntimeValue(value);
+    },
+    unset: (name: string) => {
+      delete env[name.trim()];
+    },
+    all: () => ({ ...env }),
+  };
+}
+
+function runPostResponseScript(
+  step: WorkflowStep,
+  proxyResponse: RunnerProxyResponse,
+  request: BuiltStepRequest,
+  responseTime: number,
+  env: WorkflowRuntimeEnv
+) {
+  const code = step.script.trim();
+  if (!code || /^(\/\/.*\n?)+$/.test(code)) return undefined;
+
+  const json = parseJsonBody(proxyResponse.body);
+  const responseApi = {
+    status: proxyResponse.status,
+    statusText: proxyResponse.statusText,
+    ok: proxyResponse.status >= 200 && proxyResponse.status < 300,
+    headers: Object.fromEntries(proxyResponse.headers),
+    body: proxyResponse.body,
+    text: proxyResponse.body,
+    json,
+    durationMs: responseTime,
+  };
+  const requestApi = {
+    method: step.request.method,
+    url: request.url,
+    headers: { ...request.headers },
+    body: request.requestPayload,
+  };
+  const api = envScriptApi(env);
+  const pm = {
+    environment: api,
+    response: {
+      ...responseApi,
+      json: () => json ?? null,
+      text: () => proxyResponse.body,
+    },
+    request: requestApi,
+  };
+  const sandboxConsole = {
+    log: () => undefined,
+    info: () => undefined,
+    warn: () => undefined,
+    error: () => undefined,
+  };
+
+  try {
+    const fn = new Function("response", "env", "request", "pm", "console", code);
+    fn(responseApi, api, requestApi, pm, sandboxConsole);
+    return undefined;
+  } catch (error: unknown) {
+    return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  }
+}
+
+function callPassed(call: CallRecord) {
+  return (
+    !call.error &&
+    call.statusCode > 0 &&
+    call.statusCode < 400 &&
+    call.assertions.every((assertion) => assertion.passed)
+  );
+}
+
+async function makeProxyCall(
+  workflow: Workflow,
+  step: WorkflowStep,
+  env: WorkflowRuntimeEnv
+): Promise<CallRecord> {
+  const timestamp = new Date().toISOString();
+  const started = performance.now();
+  let request: BuiltStepRequest | null = null;
+
+  try {
+    request = buildStepRequest(step, env);
+    const execution = step.execution ?? {
+      iterations: 1,
+      rampUpDuration: 0,
+      delay: 500,
+      timeout: 30000,
+      retryCount: 0,
+    };
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      Math.max(1000, Math.floor(execution.timeout || 30000))
+    );
+    let proxyResponse: RunnerProxyResponse;
+
+    try {
+      proxyResponse = await runnerProxyFetch({
+        url: request.url,
+        method: step.request.method,
+        headers: request.headers,
+        body: request.body,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const responseTime = Math.round(performance.now() - started);
+    const scriptError = runPostResponseScript(step, proxyResponse, request, responseTime, env);
+    const assertions = evaluateAssertions(step, proxyResponse, responseTime);
+
+    return {
+      id: runtimeId("call"),
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      stepId: step.id,
+      stepName: step.name,
+      method: step.request.method,
+      url: request.url,
+      statusCode: proxyResponse.status,
+      responseTime,
+      requestPayload: request.requestPayload,
+      responseBody: proxyResponse.body,
+      error: scriptError,
+      timestamp,
+      assertions,
+    };
+  } catch (error: unknown) {
+    const responseTime = Math.round(performance.now() - started);
+    const message = error instanceof Error ? error.message : "Workflow request failed.";
+    return {
+      id: runtimeId("call"),
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      stepId: step.id,
+      stepName: step.name,
+      method: step.request.method,
+      url: request?.url ?? stepUrl(step, env),
+      statusCode: 0,
+      responseTime,
+      requestPayload: request?.requestPayload ?? requestPayload(step, env),
+      responseBody: "",
+      error: message,
+      timestamp,
+      assertions: [
+        {
+          type: "request",
+          expected: "proxy call succeeded",
+          actual: message,
+          passed: false,
+        },
+      ],
+    };
+  }
 }
 
 function buildRunResult(
@@ -880,7 +1733,11 @@ function buildRunResult(
 ): WorkflowRunResult {
   const calls = stepResults.flatMap((step) => step.calls);
   const failed = calls.filter(
-    (call) => call.error || call.statusCode >= 400 || call.assertions.some((assertion) => !assertion.passed)
+    (call) =>
+      call.error ||
+      call.statusCode <= 0 ||
+      call.statusCode >= 400 ||
+      call.assertions.some((assertion) => !assertion.passed)
   ).length;
   const passed = calls.length - failed;
   const responseTimes = calls.map((call) => call.responseTime).sort((a, b) => a - b);
@@ -1173,10 +2030,10 @@ export default function WorkflowsPage() {
   const recordRunResult = (result: WorkflowRunResult) => {
     const calls = result.stepResults.flatMap((step) => step.calls);
     setRunResults((current) => [result, ...current].slice(0, 100));
-    setCallHistory((current) => [...calls, ...current].slice(0, 1000));
+    setCallHistory((current) => [...current, ...calls].slice(-1000));
   };
 
-  const runWorkflowSimulation = async (
+  const runWorkflowExecution = async (
     workflow: Workflow,
     options: { trackSteps?: boolean } = {}
   ) => {
@@ -1185,62 +2042,80 @@ export default function WorkflowsPage() {
 
     const startedAt = new Date().toISOString();
     const stepResults: StepRunResult[] = [];
+    const runtimeEnv: WorkflowRuntimeEnv = { ...workflow.env };
+    const workflowIterations = Math.max(1, Math.floor(workflow.config.iterations || 1));
+    let shouldStopWorkflow = false;
 
-    for (const step of enabledSteps) {
-      if (cancelRunRef.current) break;
-      const execution = step.execution ?? {
-        iterations: 1,
-        rampUpDuration: 0,
-        delay: 500,
-        timeout: 30000,
-        retryCount: 0,
-      };
-      const iterations = Math.max(1, Math.floor(execution.iterations));
-      const retryCount = Math.max(0, Math.floor(execution.retryCount));
-      const calls: CallRecord[] = [];
+    if (workflow.config.globalRampUp > 0) {
+      await sleep(workflow.config.globalRampUp * 1000);
+    }
 
-      if (options.trackSteps) {
-        setStepStatuses((current) => ({ ...current, [step.id]: "running" }));
-        setSelectedStepId(step.id);
-      }
+    for (let workflowIteration = 0; workflowIteration < workflowIterations; workflowIteration += 1) {
+      if (cancelRunRef.current || shouldStopWorkflow) break;
 
-      if (execution.rampUpDuration > 0) {
-        await sleep(Math.min(execution.rampUpDuration, options.trackSteps ? 1200 : 600));
-      }
-
-      let stepPassed = true;
-      for (let iteration = 0; iteration < iterations; iteration += 1) {
+      for (const step of enabledSteps) {
         if (cancelRunRef.current) break;
-        let iterationPassed = false;
-        for (let attempt = 0; attempt <= retryCount; attempt += 1) {
-          await sleep(options.trackSteps ? 300 : 180 + Math.random() * 240);
+        const execution = step.execution ?? {
+          iterations: 1,
+          rampUpDuration: 0,
+          delay: 500,
+          timeout: 30000,
+          retryCount: 0,
+        };
+        const iterations = Math.max(1, Math.floor(execution.iterations));
+        const retryCount = Math.max(0, Math.floor(execution.retryCount));
+        const calls: CallRecord[] = [];
+
+        if (options.trackSteps) {
+          setStepStatuses((current) => ({ ...current, [step.id]: "running" }));
+          setSelectedStepId(step.id);
+        }
+
+        if (execution.rampUpDuration > 0) {
+          await sleep(execution.rampUpDuration);
+        }
+
+        let stepPassed = true;
+        for (let iteration = 0; iteration < iterations; iteration += 1) {
           if (cancelRunRef.current) break;
-          const passed = Math.random() > 0.15;
-          calls.push(makeSimulatedCall(workflow, step, passed));
-          iterationPassed = passed;
-          if (passed) break;
+          let iterationPassed = false;
+          for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+            if (cancelRunRef.current) break;
+            const call = await makeProxyCall(workflow, step, runtimeEnv);
+            calls.push(call);
+            iterationPassed = callPassed(call);
+            if (iterationPassed) break;
+          }
+          stepPassed = stepPassed && iterationPassed;
+          if (!iterationPassed && workflow.config.stopOnError) break;
+          if (iteration < iterations - 1 && execution.delay > 0) {
+            await sleep(execution.delay);
+          }
         }
-        stepPassed = stepPassed && iterationPassed;
-        if (!iterationPassed && workflow.config.stopOnError) break;
-        if (iteration < iterations - 1 && execution.delay > 0) {
-          await sleep(Math.min(execution.delay, options.trackSteps ? 800 : 400));
+
+        const status: StepStatus = stepPassed ? "passed" : "failed";
+        stepResults.push({
+          stepId:
+            workflowIterations > 1
+              ? `${step.id}-workflow-iteration-${workflowIteration + 1}`
+              : step.id,
+          stepName:
+            workflowIterations > 1
+              ? `${step.name} (run ${workflowIteration + 1})`
+              : step.name,
+          status,
+          calls,
+        });
+
+        if (options.trackSteps) {
+          setStepStatuses((current) => ({ ...current, [step.id]: status }));
+        }
+
+        if (!stepPassed && workflow.config.stopOnError) {
+          shouldStopWorkflow = true;
+          break;
         }
       }
-
-      const status: StepStatus = stepPassed ? "passed" : "failed";
-      stepResults.push({
-        stepId: step.id,
-        stepName: step.name,
-        status,
-        calls,
-      });
-
-      if (options.trackSteps) {
-        setStepStatuses((current) => ({ ...current, [step.id]: status }));
-      }
-
-      if (!stepPassed && workflow.config.stopOnError) break;
-      await sleep(options.trackSteps ? 150 : 100);
     }
 
     const finishedAt = new Date().toISOString();
@@ -1253,7 +2128,7 @@ export default function WorkflowsPage() {
     );
   };
 
-  const simulateRun = async () => {
+  const runActiveWorkflow = async () => {
     if (!activeWorkflow || running) return;
     if (!activeWorkflow.steps.some((step) => step.enabled)) return;
 
@@ -1264,7 +2139,7 @@ export default function WorkflowsPage() {
     setStepStatuses({});
 
     try {
-      const result = await runWorkflowSimulation(activeWorkflow, { trackSteps: true });
+      const result = await runWorkflowExecution(activeWorkflow, { trackSteps: true });
       if (result) {
         recordRunResult(result);
         setWorkflowStatuses((current) => ({
@@ -1300,7 +2175,7 @@ export default function WorkflowsPage() {
           await sleep(index * 250);
           if (cancelRunRef.current) return;
           setWorkflowStatuses((current) => ({ ...current, [workflow.id]: "running" }));
-          const result = await runWorkflowSimulation(workflow);
+          const result = await runWorkflowExecution(workflow);
           if (!result) return;
           recordRunResult(result);
           setWorkflowStatuses((current) => ({ ...current, [workflow.id]: result.status }));
@@ -1701,7 +2576,7 @@ export default function WorkflowsPage() {
                         </span>
                       )}
                       <button
-                        onClick={simulateRun}
+                        onClick={runActiveWorkflow}
                         disabled={running || !activeWorkflow.steps.some((step) => step.enabled)}
                         className="h-9 px-3 rounded-md bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 text-sm flex items-center gap-2"
                       >
@@ -1755,6 +2630,7 @@ export default function WorkflowsPage() {
 
               <StepEditor
                 step={selectedStep}
+                env={activeWorkflow.env}
                 onUpdate={(patch) => selectedStep && updateStep(selectedStep.id, patch)}
               />
             </>
